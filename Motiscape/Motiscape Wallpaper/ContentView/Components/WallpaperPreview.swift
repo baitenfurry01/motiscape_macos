@@ -1,0 +1,729 @@
+import SwiftUI
+
+private struct WallpaperSizeLabel: View {
+    let directory: URL
+    let isActive: Bool
+    @State private var model = WallpaperSizeModel()
+
+    var body: some View {
+        Text(model.bytes.map { ByteCountFormatter.string(fromByteCount: Int64($0), countStyle: .file) } ?? "…")
+            .task(id: isActive ? directory : nil) {
+                if isActive { model.load(directory) } else { model.cancel() }
+            }
+            .onReceive(NotificationCenter.default.publisher(for: WallpaperSizeCache.didInvalidate)) { _ in
+                if isActive { model.load(directory) }
+            }
+            .onDisappear { model.cancel() }
+    }
+}
+
+private struct WallpaperPropertiesDisclosureStyle: DisclosureGroupStyle {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    func makeBody(configuration: Configuration) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Button {
+                withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.24)) {
+                    configuration.isExpanded.toggle()
+                }
+            } label: {
+                HStack(spacing: 4) {
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                        .rotationEffect(.degrees(configuration.isExpanded ? 90 : 0))
+                        .frame(width: 24, height: 28)
+                        .accessibilityHidden(true)
+                    configuration.label
+                }
+                .frame(maxWidth: .infinity, minHeight: 28, alignment: .leading)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityValue(configuration.isExpanded ? Text("已展开") : Text("已折叠"))
+
+            // Keep the condition results and row identity alive while folded.
+            // Recreating them briefly reveals every language before filtering,
+            // which changes the scroll extent while the section is opening.
+            configuration.content
+                .padding(.top, 12)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(height: configuration.isExpanded ? nil : 0, alignment: .top)
+                .clipped()
+                .disabled(!configuration.isExpanded)
+                .allowsHitTesting(configuration.isExpanded)
+                .accessibilityHidden(!configuration.isExpanded)
+        }
+    }
+}
+
+struct WallpaperPreview: SubviewOfContentView {
+    @Bindable var viewModel: ContentViewModel
+    @Bindable var wallpaperViewModel: WallpaperViewModel
+    @Bindable var workshopViewModel: WorkshopViewModel
+    let isActive: Bool
+    
+    @Environment(\.undoManager) var undoManager
+    
+    @State var isEditingId = ""
+    @State var title = ""
+    @State var newTag = ""
+    @FocusState private var titleFieldFocused: Bool
+    
+    @State var hoveredTag: String?
+    @State var isTagsHovered = false
+    @State private var isConfirmingUnsubscribe = false
+    @State private var arePropertiesExpanded = true
+
+    init(contentViewModel viewModel: ContentViewModel,
+         wallpaperViewModel: WallpaperViewModel,
+         workshopViewModel: WorkshopViewModel = AppDelegate.shared.workshopViewModel,
+         isActive: Bool = true) {
+        self.viewModel = viewModel
+        self.wallpaperViewModel = wallpaperViewModel
+        self.workshopViewModel = workshopViewModel
+        self.isActive = isActive
+    }
+
+    private func beginTitleEditing() {
+        title = wallpaperViewModel.previewWallpaper.project.title
+        isEditingId = "title"
+        titleFieldFocused = true
+    }
+
+    private func saveTitle() {
+        let value = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !value.isEmpty,
+              wallpaperViewModel.updateStoredMetadata(title: value) != nil else { return }
+        isEditingId = ""
+        titleFieldFocused = false
+        viewModel.refresh()
+    }
+
+    private func saveTags(_ tags: [String]) {
+        guard wallpaperViewModel.updateStoredMetadata(tags: tags) != nil else { return }
+        viewModel.refresh()
+    }
+    
+    var body: some View {
+        let displayKey = wallpaperViewModel.selectedDisplayKey
+        VStack(spacing: 0) {
+            ScrollView {
+                VStack(spacing: 16) {
+                    HStack {
+                        Image(systemName: "display")
+                            .foregroundStyle(.secondary)
+                        Text("正在为 \(wallpaperViewModel.selectedDisplayName) 设置")
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                        Spacer()
+                    }
+
+                    VStack(spacing: 10) {
+                        WorkshopImage(wallpaper: wallpaperViewModel.previewWallpaper,
+                                      contentMode: .fit, isAnimating: isActive,
+                                      isLoadingEnabled: isActive, preloadsWhenInactive: false)
+                            .background(Color(nsColor: NSColor.controlBackgroundColor))
+                            .aspectRatio(4.0 / 3.0, contentMode: .fit)
+                            .frame(maxWidth: .infinity)
+                            .clipShape(RoundedRectangle(cornerRadius: MotiscapeDesign.cardRadius))
+                            .overlay(alignment: .topTrailing) {
+                                if wallpaperViewModel.isApplyingSelection {
+                                    ProgressView()
+                                        .controlSize(.small)
+                                        .padding(8)
+                                        .background(.regularMaterial, in: Circle())
+                                        .padding(8)
+                                        .accessibilityLabel(Text("正在应用壁纸…"))
+                                        .help("正在应用壁纸…")
+                                }
+                            }
+                        HStack(spacing: 8) {
+                            if isEditingId == "title" {
+                                TextField("壁纸名称", text: $title)
+                                    .textFieldStyle(.roundedBorder)
+                                    .focused($titleFieldFocused)
+                                    .onSubmit {
+                                        saveTitle()
+                                    }
+                                    .onExitCommand {
+                                        isEditingId = ""
+                                        titleFieldFocused = false
+                                    }
+                            } else {
+                                Text(wallpaperViewModel.previewWallpaper.project.title.isEmpty ? L("未命名") : wallpaperViewModel.previewWallpaper.project.title)
+                                    .font(.headline)
+                                    .frame(minWidth: 50)
+                                    .id("title")
+                                    .lineLimit(1)
+                                    .onTapGesture(count: 2) {
+                                        beginTitleEditing()
+                                    }
+                                Button(action: beginTitleEditing) {
+                                    Image(systemName: "square.and.pencil")
+                                }
+                                .buttonStyle(.plain)
+                                .help("编辑壁纸名称")
+                            }
+                            
+                        }
+                    }
+                    authorSection
+                    HStack {
+                        Button {
+                            toggleCurrentFavorite()
+                        } label: {
+                            if isChangingCurrentFavorite {
+                                ProgressView()
+                                    .controlSize(.small)
+                                    .frame(width: 16, height: 16)
+                            } else {
+                                Image(systemName: isCurrentFavorite ? "heart.fill" : "heart")
+                                    .foregroundStyle(isCurrentFavorite ? .red : .secondary)
+                            }
+                        }
+                        .disabled(isChangingCurrentFavorite)
+                        .help(L(isCurrentFavorite ? "取消收藏" : "加入收藏"))
+                    }
+                    HStack {
+                        Text(wallpaperViewModel.previewWallpaper.isPreset
+                            ? (wallpaperViewModel.previewWallpaper.presetStatusDescription.map { L("预设 · %@", $0) }
+                                ?? L("预设 · %@", wallpaperViewModel.previewWallpaper.kind.displayName))
+                            : wallpaperViewModel.previewWallpaper.kind.displayName)
+                        WallpaperSizeLabel(directory: wallpaperViewModel.previewWallpaper.wallpaperDirectory,
+                                           isActive: isActive)
+                    }
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+
+                    if wallpaperViewModel.previewWallpaper.isPreset,
+                       let dependency = wallpaperViewModel.previewWallpaper.presetDependency {
+                        Label("基础壁纸：\(dependency.rawValue)", systemImage: "square.stack.3d.up.fill")
+                            .font(.caption)
+                            .foregroundStyle(wallpaperViewModel.previewWallpaper.needsPresetDependency ? .orange : .secondary)
+                    }
+                    
+                    tags
+                        .animation(.spring(), value: isTagsHovered)
+                        .onHover { isTagsHovered = $0 }
+                    
+                    if isEditingId == "tags" {
+                        HStack {
+                            Button {
+                                newTag = ""
+                                isEditingId = ""
+                            } label: {
+                                Image(systemName: "arrow.uturn.backward")
+                            }
+                            TextField("新标签", text: $newTag)
+                                .onSubmit {
+                                    defer {
+                                        newTag = ""
+                                        isEditingId = ""
+                                    }
+                                    
+                                    guard !newTag.isEmpty else { return }
+                                    
+                                    let current = wallpaperViewModel.previewWallpaper
+                                    var tags = current.project.tags ?? []
+                                    
+                                    tags = Array(Set(tags))
+                                    
+                                    tags.append(newTag)
+                                    
+                                    tags = Array(Set(tags))
+                                    
+                                    saveTags(tags.sorted())
+                                }
+                        }
+                    }
+                    workshopActions
+
+                    InspectorCard {
+                        InspectorSectionTitle("播放控制", systemImage: "play.circle")
+                        VStack(spacing: 16) {
+                            HStack {
+                                Label("音量", systemImage: "speaker.wave.3.fill")
+                                Spacer()
+                                MotiscapeSlider(value: Binding(
+                                    get: { wallpaperViewModel.playVolume },
+                                    set: { wallpaperViewModel.setVolume($0, for: displayKey) }), in: 0...1,
+                                    onEditingChanged: { editing in
+                                        if !editing { wallpaperViewModel.flushInteractiveChanges(for: displayKey) }
+                                    })
+                                    .frame(width: 100)
+                                Text(String(format: "%.0f", wallpaperViewModel.playVolume * 100) + "%")
+                                    .frame(width: 35)
+                                    .font(.caption.monospacedDigit())
+                                    .foregroundStyle(.secondary)
+                            }
+                            if wallpaperViewModel.previewWallpaper.kind == .scene ||
+                                wallpaperViewModel.previewWallpaper.kind == .video {
+                                HStack {
+                                    Label("速度", systemImage: "gauge.with.dots.needle.67percent")
+                                    Spacer()
+                                    MotiscapeSlider(value: Binding(
+                                        get: { wallpaperViewModel.playRate },
+                                        set: { wallpaperViewModel.setSpeed($0, for: displayKey) }), in: 0...2, step: 0.1,
+                                        onEditingChanged: { editing in
+                                            if !editing { wallpaperViewModel.flushInteractiveChanges(for: displayKey) }
+                                        })
+                                        .frame(width: 100)
+                                    Text(String(format: "%.01fx", wallpaperViewModel.playRate))
+                                    .frame(width: 35)
+                                    .font(.caption.monospacedDigit())
+                                    .foregroundStyle(.secondary)
+                                }
+                            }
+                            if wallpaperViewModel.previewWallpaper.kind == .video {
+                                HStack {
+                                    Label("填充模式", systemImage: "aspectratio.fill")
+                                    Spacer()
+                                    Picker("填充模式", selection: Binding(
+                                        get: { wallpaperViewModel.controlState.fillMode },
+                                        set: { wallpaperViewModel.setFillMode($0) })) {
+                                        ForEach(FillMode.allCases) { Text($0.displayName).tag($0) }
+                                    }
+                                    .labelsHidden().frame(width: 120)
+                                }
+                            }
+                        }
+                    }
+
+                    if wallpaperViewModel.previewWallpaper.kind == .scene ||
+                        wallpaperViewModel.previewWallpaper.kind == .video {
+                        InspectorCard {
+                            InspectorSectionTitle("画面位置", systemImage: "viewfinder")
+                            positionControls
+                        }
+                    }
+
+                    InspectorCard {
+                        DisclosureGroup(isExpanded: $arePropertiesExpanded) {
+                            PropertyEditor(wallpaper: wallpaperViewModel.previewWallpaper,
+                                           isActive: isActive)
+                                .environment(wallpaperViewModel)
+                        } label: {
+                            InspectorSectionTitle("壁纸属性", systemImage: "slider.horizontal.3")
+                        }
+                        .disclosureGroupStyle(WallpaperPropertiesDisclosureStyle())
+                        .accessibilityIdentifier("inspector.properties")
+                    }
+
+                    InspectorCard {
+                        InspectorSectionTitle("壁纸", systemImage: "photo")
+                        Text(L("当前选择：%@", wallpaperViewModel.selectedDisplayTitle))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                        VStack(spacing: 8) {
+                            Button {
+                                wallpaperViewModel.applyToAllScreens()
+                            } label: {
+                                Label("覆盖到所有显示器", systemImage: "rectangle.on.rectangle")
+                                    .lineLimit(nil)
+                                    .multilineTextAlignment(.center)
+                                    .fixedSize(horizontal: false, vertical: true)
+                                    .frame(maxWidth: .infinity)
+                            }
+                            .buttonStyle(.borderedProminent)
+                            Button {
+                                wallpaperViewModel.stopWallpaper()
+                            } label: {
+                                Label(L("停止所选显示器的壁纸"), systemImage: "stop.fill")
+                                    .lineLimit(nil)
+                                    .multilineTextAlignment(.center)
+                                    .fixedSize(horizontal: false, vertical: true)
+                                    .frame(maxWidth: .infinity)
+                            }
+                            Button {
+                                wallpaperViewModel.stopAllWallpapers()
+                            } label: {
+                                Label(L("停止所有显示器的壁纸"), systemImage: "stop.circle.fill")
+                                    .lineLimit(nil)
+                                    .multilineTextAlignment(.center)
+                                    .fixedSize(horizontal: false, vertical: true)
+                                    .frame(maxWidth: .infinity)
+                            }
+                        }
+                    }
+
+                    InspectorCard {
+                        InspectorSectionTitle("预设", systemImage: "square.stack")
+                        VStack(spacing: 8) {
+                            HStack(spacing: 8) {
+                                Button {
+                                    if let r = PresetManager.shared.importPreset() {
+                                        wallpaperViewModel.runtime = r
+                                        wallpaperViewModel.saveRuntime()
+                                        wallpaperViewModel.reapplyCurrent()
+                                    }
+                                } label: {
+                                    Label("导入", systemImage: "folder.fill").frame(maxWidth: .infinity)
+                                }
+                                Button {
+                                    PresetManager.shared.exportPreset(for: wallpaperViewModel.previewWallpaper,
+                                                                      runtime: wallpaperViewModel.runtime)
+                                } label: {
+                                    Label("导出", systemImage: "square.and.arrow.down.fill").frame(maxWidth: .infinity)
+                                }
+                            }
+                            Button(role: .destructive) {
+                                wallpaperViewModel.resetProperties()
+                            } label: {
+                                Label("重置为默认", systemImage: "arrow.triangle.2.circlepath")
+                                    .frame(maxWidth: .infinity)
+                            }
+                            .buttonStyle(.borderedProminent)
+                            .tint(.red)
+                        }
+                    }
+                }
+                .blur(radius: wallpaperViewModel.previewWallpaper.project == .invalid ? 16.0 : 0)
+                .overlay {
+                    if wallpaperViewModel.previewWallpaper.project == .invalid {
+                        Text("请选择一个有效的壁纸")
+                    }
+                }
+                .disabled(wallpaperViewModel.previewWallpaper.project == .invalid ||
+                          wallpaperViewModel.previewWallpaper.id != wallpaperViewModel.currentWallpaper.id)
+                .padding(16)
+            }
+
+            HStack {
+                Spacer()
+                Button {
+                    AppDelegate.shared.mainWindowController.close()
+                } label: {
+                    Text("确定").frame(width: 50)
+                }
+                .buttonStyle(.borderedProminent)
+                Button { 
+                    AppDelegate.shared.mainWindowController.close()
+                } label: {
+                    Text("取消").frame(width: 50)
+                }
+            }
+            .padding()
+        }
+        .background(Color.primary.opacity(0.035))
+        .background(Color(nsColor: .windowBackgroundColor))
+        .task(id: isActive ? wallpaperViewModel.previewWallpaper.id : nil) {
+            guard isActive else { return }
+            workshopViewModel.loadInstalledMetadata(for: wallpaperViewModel.previewWallpaper)
+        }
+        .onChange(of: wallpaperViewModel.previewWallpaper.id) { _, _ in
+            isEditingId = ""
+            newTag = ""
+            titleFieldFocused = false
+        }
+        .confirmationDialog(
+            "取消订阅",
+            isPresented: $isConfirmingUnsubscribe,
+            presenting: workshopViewModel.installedWorkshopItem(for: wallpaperViewModel.previewWallpaper)
+        ) { item in
+            Button("取消订阅", role: .destructive) {
+                workshopViewModel.unsubscribe(item)
+            }
+            Button("取消", role: .cancel) { }
+        } message: { _ in
+            Text("取消订阅后，Motiscape 会停止下载并删除 Motiscape 下载目录中的副本。Steam 内容目录中的文件不会被删除。")
+        }
+    }
+
+    private var positionControls: some View {
+        let availability = wallpaperViewModel.positionAvailability
+        let cover = wallpaperViewModel.controlState.fillMode == .cover
+        return VStack(spacing: 12) {
+            positionRow("水平位置（X）", horizontal: true, enabled: cover && availability.x)
+            positionRow("垂直位置（Y）", horizontal: false, enabled: cover && availability.y)
+            if !cover {
+                Text("位置调整适用于填充模式")
+                    .font(.caption).foregroundStyle(.secondary)
+            } else if !availability.known {
+                Text("壁纸运行后可调整画面位置")
+                    .font(.caption).foregroundStyle(.secondary)
+            } else {
+                Text("仅可调整被裁切的方向，50% 为居中")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            Button("恢复居中") {
+                wallpaperViewModel.setPosition(.center)
+            }
+            .disabled(wallpaperViewModel.controlState.position == .center)
+        }
+        .id("\(wallpaperViewModel.selectedDisplayKey.rawValue):\(wallpaperViewModel.previewWallpaper.id)")
+    }
+
+    private func positionRow(_ title: LocalizedStringKey, horizontal: Bool,
+                             enabled: Bool) -> some View {
+        let displayKey = wallpaperViewModel.selectedDisplayKey
+        let value = Binding<Double>(
+            get: {
+                let position = wallpaperViewModel.controlState.position
+                return horizontal ? position.x : position.y
+            },
+            set: { value in
+                let position = wallpaperViewModel.controlState.position
+                wallpaperViewModel.setPosition(WallpaperPosition(
+                    x: horizontal ? value : position.x,
+                    y: horizontal ? position.y : value), for: displayKey)
+            })
+        return VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Text(title)
+                Spacer()
+                Text(value.wrappedValue, format: .percent.precision(.fractionLength(1)))
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(.secondary)
+            }
+            MotiscapeSlider(value: value, in: 0...1, step: 0.001, onEditingChanged: { editing in
+                if !editing { wallpaperViewModel.flushInteractiveChanges(for: displayKey) }
+            })
+                .accessibilityLabel(Text(title))
+                .accessibilityValue(Text(value.wrappedValue, format: .percent.precision(.fractionLength(1))))
+                .accessibilityAdjustableAction { direction in
+                    guard enabled else { return }
+                    switch direction {
+                    case .increment: value.wrappedValue = min(1, value.wrappedValue + 0.01)
+                    case .decrement: value.wrappedValue = max(0, value.wrappedValue - 0.01)
+                    @unknown default: break
+                    }
+                }
+        }
+        .disabled(!enabled)
+        .opacity(enabled ? 1 : 0.5)
+        .help(L(horizontal ? "选择壁纸从左到右的展示区域" : "选择壁纸从上到下的展示区域"))
+    }
+
+    @ViewBuilder
+    private var workshopActions: some View {
+        if let item = workshopViewModel.installedWorkshopItem(for: wallpaperViewModel.previewWallpaper) {
+            let id = item.publishedFileId
+            let state = workshopViewModel.subscriptionState(for: id)
+            let isChecking = workshopViewModel.checkingSubscriptionIDs.contains(id)
+            let isChanging = workshopViewModel.changingSubscriptionIDs.contains(id)
+
+            VStack(spacing: 3) {
+                if workshopViewModel.steamSetupState == .checking {
+                    HStack(spacing: 6) {
+                        ProgressView()
+                            .controlSize(.small)
+                        Text(workshopViewModel.steamCheckingMessage)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 6)
+                } else if workshopViewModel.steamSetupState != .ready {
+                    Button {
+                        AppDelegate.shared.openSteamSetup()
+                    } label: {
+                        Label("登录 Steam", systemImage: "person.crop.circle.badge.exclamationmark")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.borderedProminent)
+                } else if isChecking || isChanging {
+                    HStack(spacing: 6) {
+                        ProgressView()
+                            .controlSize(.small)
+                        Text(LocalizedStringKey(isChanging ? "正在同步订阅状态…" : "正在检查订阅状态…"))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 6)
+                } else if state == .unknown {
+                    Button {
+                        workshopViewModel.refreshSubscriptionStates(for: [item])
+                    } label: {
+                        Label("重新检查订阅状态", systemImage: "arrow.clockwise")
+                            .frame(maxWidth: .infinity)
+                    }
+                } else if state == .subscribed {
+                    Button {
+                        isConfirmingUnsubscribe = true
+                    } label: {
+                        Label("取消订阅", systemImage: "xmark.circle.fill")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .tint(.red)
+                } else {
+                    Button {
+                        workshopViewModel.subscribe(item)
+                    } label: {
+                        Label("订阅并下载", systemImage: "plus.circle.fill")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.borderedProminent)
+                }
+
+                HStack(spacing: 3) {
+                    Button {
+                        openWorkshopItem(item)
+                    } label: {
+                        Label("评论", systemImage: "text.bubble.fill")
+                            .frame(maxWidth: .infinity)
+                    }
+                    Button {
+                        copyWorkshopURL(item)
+                    } label: {
+                        Image(systemName: "doc.on.doc.fill")
+                    }
+                    .help(L("复制创意工坊链接"))
+                    Button {
+                        openWorkshopItemInSteam(item)
+                    } label: {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                    }
+                    .help(L("在 Steam 中查看或举报"))
+                }
+
+                if let error = workshopViewModel.subscriptionActionError(for: id) {
+                    NetworkErrorText(error)
+                        .font(.caption2)
+                        .foregroundStyle(.red)
+                        .multilineTextAlignment(.center)
+                }
+            }
+        }
+    }
+
+    private func openWorkshopItem(_ item: WorkshopItem) {
+        workshopViewModel.selectedItem = item
+        workshopViewModel.showCustomization = false
+        workshopViewModel.showCreatorProfile = false
+        workshopViewModel.prepareWorkshopInteractions(for: item)
+        AppDelegate.shared.navigationModel.selection = .workshop
+    }
+
+    private func copyWorkshopURL(_ item: WorkshopItem) {
+        let value = "https://steamcommunity.com/sharedfiles/filedetails/?id=\(item.publishedFileId)"
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(value, forType: .string)
+    }
+
+    private func openWorkshopItemInSteam(_ item: WorkshopItem) {
+        guard let url = URL(string: "https://steamcommunity.com/sharedfiles/filedetails/?id=\(item.publishedFileId)") else { return }
+        NSWorkspace.shared.open(url)
+    }
+
+    private var currentWorkshopID: String? {
+        wallpaperViewModel.previewWallpaper.steamFavoriteWorkshopID()
+    }
+
+    private var isCurrentFavorite: Bool {
+        if let currentWorkshopID {
+            return workshopViewModel.isWorkshopFavorite(currentWorkshopID)
+        }
+        return FavoritesManager.shared.isFavorite(wallpaperViewModel.previewWallpaper.id)
+    }
+
+    private var isChangingCurrentFavorite: Bool {
+        currentWorkshopID.map { workshopViewModel.changingFavoriteIDs.contains($0) } == true
+    }
+
+    private func toggleCurrentFavorite() {
+        if let currentWorkshopID {
+            workshopViewModel.toggleWorkshopFavorite(workshopId: currentWorkshopID)
+        } else {
+            FavoritesManager.shared.toggle(wallpaperViewModel.previewWallpaper.id)
+            NotificationCenter.default.post(name: .favoritesChanged, object: nil)
+        }
+    }
+
+    private var authorSection: some View {
+        let wallpaper = wallpaperViewModel.previewWallpaper
+        let creator = workshopViewModel.installedCreator(for: wallpaper)
+        let name = workshopViewModel.installedAuthorName(for: wallpaper) ?? L("佚名作者")
+        return Button {
+            if let creator {
+                workshopViewModel.openCreatorProfile(creator)
+            }
+        } label: {
+            HStack(spacing: 8) {
+                SteamAgentImage(url: creator?.avatarURL) { phase in
+                    if case .success(let image) = phase {
+                        image.resizable().scaledToFill()
+                    } else {
+                        Image(systemName: "person.crop.circle.fill")
+                            .resizable()
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .frame(width: 32, height: 32)
+                .clipShape(Circle())
+                Text(name)
+                    .lineLimit(1)
+                Spacer(minLength: 0)
+                if creator != nil {
+                    Image(systemName: "arrow.up.right")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+        .buttonStyle(.plain)
+        .disabled(creator == nil)
+    }
+    
+    var tags: some View {
+        WallpaperTagRow {
+            if let tags = wallpaperViewModel.previewWallpaper.project.tags, !tags.isEmpty {
+                ForEach(tags, id: \.self) { tag in
+                    Text(tag)
+                        .lineLimit(1)
+                        .fixedSize(horizontal: true, vertical: false)
+                        .padding(.horizontal, 9)
+                        .padding(.vertical, 5)
+                        .background(Color.primary.opacity(0.06), in: Capsule())
+                        .overlay(alignment: .topTrailing) {
+                            if hoveredTag == tag {
+                                Button {
+                                    let current = wallpaperViewModel.previewWallpaper
+                                    guard var tags = current.project.tags else { return }
+                                    
+                                    tags = Array(Set(tags))
+                                    
+                                    guard let index = tags.firstIndex(where: { $0 == tag }) else { return }
+                                    
+                                    tags.remove(at: index)
+                                    
+                                    saveTags(tags)
+                                } label: {
+                                    Image(systemName: "xmark.circle.fill")
+                                }
+                                .buttonStyle(.plain)
+                                .foregroundStyle(.white, .red)
+                                .symbolRenderingMode(.palette)
+                                .offset(x: 5, y: -2.5)
+                            }
+                        }
+                        .onHover { hovered in
+                            if hovered {
+                                hoveredTag = tag
+                            } else {
+                                hoveredTag = nil
+                            }
+                        }
+                }
+            } else {
+                Text("暂无标签")
+                    .foregroundStyle(Color.secondary)
+            }
+            
+            if isTagsHovered {
+                Button {
+                    isEditingId = "tags"
+                } label: {
+                    Image(systemName: "plus")
+                        .font(.body)
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .font(.footnote)
+        .lineLimit(1)
+    }
+}

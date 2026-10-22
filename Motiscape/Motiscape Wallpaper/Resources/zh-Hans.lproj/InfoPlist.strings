@@ -1,0 +1,3 @@
+"NSAudioCaptureUsageDescription" = "motiscape 会采集系统音频，以驱动音频响应式壁纸。";
+"CFBundleName" = "motiscape";
+"CFBundleDisplayName" = "motiscape";

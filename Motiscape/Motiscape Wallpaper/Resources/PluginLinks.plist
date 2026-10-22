@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- 第三方插件下载页面：修改此地址后重新构建，所有界面语言共用。 -->
+    <key>thirdPartyPluginLibraryURL</key>
+    <string>https://motiscape.baiteng.net/plugins</string>
+    <!-- 欢迎页两处 App Store 功能说明链接，三种界面语言共用。 -->
+    <key>steamFeaturesInformationURL</key>
+    <string>https://motiscape.baiteng.net/appstore</string>
+</dict>
+</plist>

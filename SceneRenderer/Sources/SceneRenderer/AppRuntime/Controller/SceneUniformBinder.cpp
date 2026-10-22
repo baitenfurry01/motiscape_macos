@@ -1,0 +1,697 @@
+module;
+
+#include <rstd/macro.hpp>
+
+module sr.scene_uniform_updater;
+import eigen;
+import sr.spec_texs;
+import sr.core;
+import rstd.cppstd;
+import sr.utils;
+import sr.scene;
+
+using namespace sr;
+using namespace Eigen;
+
+namespace
+{
+
+template<std::size_t N>
+void AverageResample64(std::span<const float, 64> bins, std::array<float, N>& out) {
+    static_assert(64 % N == 0);
+    constexpr std::size_t ratio = 64 / N;
+    for (std::size_t i = 0; i < N; ++i) {
+        float sum = 0.0f;
+        for (std::size_t k = 0; k < ratio; ++k) {
+            sum += std::max(0.0f, bins[i * ratio + k]);
+        }
+        out[i] = sum / static_cast<float>(ratio);
+    }
+}
+
+float Smooth(float value) { return value * value * (3.0f - 2.0f * value); }
+
+Vector2f ShakeOffset(float x, float roughness) {
+    const float r    = std::clamp(roughness, 0.0f, 2.0f);
+    const float over = std::clamp(r - 1.0f, 0.0f, 1.0f);
+    const float grow = over * over;
+
+    constexpr float kPi      = static_cast<float>(rstd::f64_::consts::PI);
+    const float     beat_pos = std::max(0.0f, x) / (kPi * 0.5f);
+    const int       beat     = static_cast<int>(std::floor(beat_pos));
+    const float     local    = beat_pos - static_cast<float>(beat);
+    const float     u        = Smooth(local);
+
+    static constexpr std::array<std::array<float, 2>, 8> kDirections { {
+        { -1.0f, 1.0f },
+        { 1.0f, -1.0f },
+        { -1.0f, 1.0f },
+        { 1.0f, -1.0f },
+        { 1.0f, 1.0f },
+        { -1.0f, -1.0f },
+        { 1.0f, 1.0f },
+        { -1.0f, -1.0f },
+    } };
+    static constexpr std::array<float, 8>                kBaseFactors {
+        0.8f, 1.0f, 0.45f, 0.6f, 0.8f, 1.0f, 0.45f, 0.6f,
+    };
+    static constexpr std::array<float, 8> kRoughFactors {
+        6.0f, 8.0f, 1.0f, 1.0f, 6.0f, 8.0f, 1.0f, 1.0f,
+    };
+
+    auto sample = [&](int index) -> Vector2f {
+        if ((index % 2) != 0) return Vector2f::Zero();
+        const int   i      = (index / 2) % static_cast<int>(kDirections.size());
+        const float factor = kBaseFactors[i] * (1.0f + (kRoughFactors[i] - 1.0f) * grow);
+        return Vector2f { kDirections[i][0] * factor, kDirections[i][1] * factor };
+    };
+
+    const Vector2f a     = sample(beat);
+    const Vector2f b     = sample(beat + 1);
+    const Vector2f delta = b - a;
+    Vector2f       curve { -delta.y(), delta.x() };
+    if (curve.squaredNorm() > 0.0f) curve.normalize();
+    const float bend = std::sin(local * kPi) * (0.09f + grow * 0.04f) * delta.norm();
+    return a * (1.0f - u) + b * u + curve * bend;
+}
+
+} // namespace
+
+void SceneUniformUpdater::FrameBegin() {
+    /*
+        using namespace std::chrono;
+        auto nowTime = system_clock::to_time_t(system_clock::now());
+        auto cTime   = std::localtime(&nowTime);
+        m_dayTime =
+            (((cTime->tm_hour * 60) + cTime->tm_min) * 60 + cTime->tm_sec) / (24.0f * 60.0f
+       * 60.0f);
+    */
+    double new_time    = m_mouseDelayedTime + m_scene->frameTime;
+    new_time           = new_time > m_parallax.delay ? m_parallax.delay : new_time;
+    m_mouseDelayedTime = new_time;
+    // Guard against parallax.delay == 0: scenes with cameraparallaxdelay=0
+    // would otherwise produce 0/0 = NaN here, propagating through the MVP
+    // and disappearing the wallpaper entirely (issue: gray-screen render).
+    double t       = m_parallax.delay > 0.0 ? new_time / m_parallax.delay : 1.0;
+    m_parallaxMousePos =
+        std::array { (float)algorism::lerp(
+                         t, m_parallaxMousePos[0], m_parallaxMouseInput[0]),
+                     (float)algorism::lerp(
+                         t, m_parallaxMousePos[1], m_parallaxMouseInput[1]) };
+}
+
+void SceneUniformUpdater::FrameEnd() {}
+
+bool SceneUniformUpdater::RequiresContinuousFrames() const {
+    if (m_dynamic_uniforms || m_parallax.enable || m_cameraShake.enable) return true;
+    for (const auto& [node, data] : m_nodeDataMap)
+        if (data.puppet_layer) return true;
+    return false;
+}
+
+void SceneUniformUpdater::MouseInput(double x, double y) {
+    using namespace std::chrono;
+
+    auto now_time = steady_clock::now();
+    if (m_hasMouseInput) {
+        double new_time =
+            m_mouseDelayedTime -
+            duration_cast<duration<double>>(now_time - m_last_mouse_input_time).count();
+        m_mouseDelayedTime = new_time < 0.0f ? 0.0f : new_time;
+        m_pointerPosLast   = m_pointerPos;
+    }
+
+    m_pointerPos        = { (float)x, (float)y };
+    m_parallaxMouseInput = m_pointerPos;
+    if (! m_hasMouseInput) m_pointerPosLast = m_pointerPos;
+
+    m_last_mouse_input_time = now_time;
+    m_hasMouseInput          = true;
+}
+
+void SceneUniformUpdater::InitUniforms(SceneNode* pNode, const ExistsUniformOp& existsOp) {
+    m_nodeUniformInfoMap[pNode] = SceneUniformInfo();
+    auto& info                  = m_nodeUniformInfoMap[pNode];
+    info.has_MI                 = existsOp(G_MI);
+    info.has_M                  = existsOp(G_M);
+    info.has_NORMALMODELMATRIX  = existsOp(G_NORMALMODELMATRIX);
+    info.has_AM                 = existsOp(G_AM);
+    info.has_MVP                = existsOp(G_MVP);
+    info.has_MVPI               = existsOp(G_MVPI);
+    info.has_EYEPOSITION        = existsOp(G_EYEPOSITION);
+    info.has_EFFECTMODELMATRIX  = existsOp(G_EFFECTMODELMATRIX);
+    info.has_EMVP               = existsOp(G_EMVP);
+    info.has_EMVPI              = existsOp(G_EFFECTMODELVIEWPROJECTIONMATRIXINVERSE);
+    info.has_LAYERMODELMATRIX   = existsOp(G_LAYERMODELMATRIX);
+    info.has_ETVP               = existsOp(G_ETVP);
+    info.has_ETVPI              = existsOp(G_ETVPI);
+
+    info.has_VP = existsOp(G_VP);
+
+    info.has_BONES               = existsOp(G_BONES);
+    info.has_BONESALPHA          = existsOp(G_BONESALPHA);
+    info.has_TIME                = existsOp(G_TIME);
+    info.has_FRAMETIME           = existsOp(G_FRAMETIME);
+    info.has_DAYTIME             = existsOp(G_DAYTIME);
+    info.has_DAYTIME_LEGACY      = existsOp(G_DAYTIME_LEGACY);
+    info.has_POINTERPOSITION     = existsOp(G_POINTERPOSITION);
+    info.has_POINTERPOSITIONLAST = existsOp(G_POINTERPOSITIONLAST);
+    info.has_PARALLAXPOSITION    = existsOp(G_PARALLAXPOSITION);
+    info.has_TEXELSIZE           = existsOp(G_TEXELSIZE);
+    info.has_TEXELSIZEHALF       = existsOp(G_TEXELSIZEHALF);
+    info.has_SCREEN              = existsOp(G_SCREEN);
+    info.has_LP                  = existsOp(G_LP);
+    info.has_LCR                 = existsOp(G_LCR);
+    info.has_LIGHTDIRECTIONTYPE  = existsOp(G_LIGHTDIRECTIONTYPE);
+    info.has_LIGHTCONEEXPONENT   = existsOp(G_LIGHTCONEEXPONENT);
+    info.has_LIGHTCASTSHADOW     = existsOp(G_LIGHTCASTSHADOW);
+    info.has_USERALPHA           = existsOp(G_USERALPHA);
+    info.has_COLOR4              = existsOp(G_COLOR4);
+    info.has_COLOR               = existsOp(G_COLOR);
+    info.has_ALPHA               = existsOp(G_ALPHA);
+    info.has_BRIGHTNESS          = existsOp(G_BRIGHTNESS);
+    info.has_audio_16_l          = existsOp(G_AUDIO_SPEC_16_L);
+    info.has_audio_16_r          = existsOp(G_AUDIO_SPEC_16_R);
+    info.has_audio_32_l          = existsOp(G_AUDIO_SPEC_32_L);
+    info.has_audio_32_r          = existsOp(G_AUDIO_SPEC_32_R);
+    info.has_audio_64_l          = existsOp(G_AUDIO_SPEC_64_L);
+    info.has_audio_64_r          = existsOp(G_AUDIO_SPEC_64_R);
+
+    std::accumulate(begin(info.texs), end(info.texs), 0, [&existsOp](unsigned index, auto& value) {
+        value.has_resolution = existsOp(WE_GLTEX_RESOLUTION_NAMES[index]);
+        value.has_mipmap     = existsOp(WE_GLTEX_MIPMAPINFO_NAMES[index]);
+        return index + 1;
+    });
+    m_dynamic_uniforms |=
+        info.has_TIME || info.has_FRAMETIME || info.has_DAYTIME || info.has_DAYTIME_LEGACY ||
+        info.has_POINTERPOSITION || info.has_POINTERPOSITIONLAST || info.has_PARALLAXPOSITION ||
+        info.has_BONES || info.has_BONESALPHA || info.has_audio_16_l || info.has_audio_16_r ||
+        info.has_audio_32_l || info.has_audio_32_r || info.has_audio_64_l || info.has_audio_64_r;
+}
+
+std::optional<SceneNodeRenderTransform>
+SceneUniformUpdater::NodeRenderTransform(SceneNode* pNode, SceneRenderViewKind render_view) {
+    return NodeTransform(pNode, render_view, false, true);
+}
+
+std::optional<SceneNodeRenderTransform>
+SceneUniformUpdater::NodeScreenTransform(SceneNode* pNode, SceneRenderViewKind render_view) {
+    const bool offset_in_hit_center = pNode != nullptr && pNode->HasHitCenter();
+    return NodeTransform(pNode, render_view, true, ! offset_in_hit_center);
+}
+
+std::optional<SceneNodeRenderTransform>
+SceneUniformUpdater::NodeTransform(SceneNode* pNode, SceneRenderViewKind render_view,
+                                   bool screen_camera, bool apply_geometry_transform) {
+    if (pNode == nullptr) return std::nullopt;
+    pNode->UpdateTrans();
+
+    SceneCamera*     camera { nullptr };
+    std::string_view cam_name = pNode->Camera();
+    if (screen_camera) {
+        SceneCamera* perspective { nullptr };
+        if (auto it = m_scene->cameras.find("global_perspective"); it != m_scene->cameras.end())
+            perspective = it->second.get();
+        SceneCamera* own { nullptr };
+        if (! cam_name.empty()) {
+            if (auto it = m_scene->cameras.find(std::string(cam_name));
+                it != m_scene->cameras.end())
+                own = it->second.get();
+        }
+        if (own != nullptr && (own == m_scene->activeCamera || own == perspective)) {
+            camera = own;
+        } else if (pNode->Perspective() && perspective != nullptr) {
+            camera   = perspective;
+            cam_name = "global_perspective";
+        } else {
+            camera   = m_scene->activeCamera;
+            cam_name = {};
+        }
+    } else if (! pNode->Camera().empty()) {
+        auto it = m_scene->cameras.find(std::string(cam_name));
+        if (it != m_scene->cameras.end()) camera = it->second.get();
+    } else if (pNode->Perspective()) {
+        cam_name = "global_perspective";
+        auto it  = m_scene->cameras.find(std::string(cam_name));
+        if (it != m_scene->cameras.end()) camera = it->second.get();
+    } else {
+        camera = m_scene->activeCamera;
+    }
+    if (camera == nullptr) return std::nullopt;
+
+    Matrix4d view_projection = camera->GetViewProjectionMatrix(render_view);
+    if (m_cameraShake.enable && camera == m_scene->activeCamera && camera->AllowCameraShake() &&
+        m_cameraShake.amplitude > 0.0f && m_cameraShake.speed > 0.0f) {
+        const float base_extent =
+            static_cast<float>(std::min(m_scene->ortho[0], m_scene->ortho[1]));
+        const float scale = m_cameraShake.amplitude * base_extent * 0.01f;
+        const float t =
+            static_cast<float>(m_scene->elapsingTime) * m_cameraShake.speed * 2.0f;
+        auto offset = ShakeOffset(t, m_cameraShake.roughness);
+        Vector3d shake {
+            static_cast<double>(offset.x() * scale),
+            static_cast<double>(offset.y() * scale),
+            0.0,
+        };
+        view_projection =
+            view_projection * Affine3d(Translation3d(shake)).matrix();
+    }
+
+    auto node_data_it = m_nodeDataMap.find(pNode);
+    const bool has_node_data = node_data_it != m_nodeDataMap.end();
+    const auto* node_data = has_node_data ? std::addressof(node_data_it->second) : nullptr;
+    Matrix4d model = has_node_data && node_data->vertices_in_world_space && ! screen_camera
+                         ? Matrix4d::Identity()
+                         : pNode->ModelTrans();
+    if (has_node_data && cam_name != "effect" &&
+        (screen_camera || ! node_data->vertices_in_world_space)) {
+        auto camera_node = camera->GetAttachedNode();
+        const bool layer_local_effect_source =
+            camera->HasImgEffect() && camera_node.is_some() &&
+            (*camera_node == pNode || (*camera_node)->Parent() == pNode);
+        if (m_parallax.enable && ! layer_local_effect_source) {
+            auto*       parallax_node = pNode;
+            const auto* parallax_data = node_data;
+            for (auto* parent = pNode->Parent(); parent != nullptr; parent = parent->Parent()) {
+                auto it = m_nodeDataMap.find(parent);
+                if (it == m_nodeDataMap.end()) continue;
+                if (! it->second.propagate_parallax_to_children) break;
+                parallax_node = parent;
+                parallax_data = std::addressof(it->second);
+            }
+            Matrix4d parallax_transform = model;
+            if (parallax_node != pNode) {
+                parallax_node->UpdateTrans();
+                parallax_transform = parallax_node->ModelTrans();
+            }
+            Vector3f node_position =
+                parallax_transform.block<3, 1>(0, 3).cast<float>();
+            Vector2f depth(&parallax_data->propagatedParallaxDepth[0]);
+            Vector2f ortho { static_cast<float>(m_scene->ortho[0]),
+                             static_cast<float>(m_scene->ortho[1]) };
+            Vector2f mouse =
+                Scaling(1.0f, -1.0f) *
+                (Vector2f { 0.5f, 0.5f } - Vector2f(&m_parallaxMousePos[0]));
+            mouse = mouse.cwiseProduct(ortho) * m_parallax.mouseinfluence;
+            Vector3f camera_position = camera->GetPosition(render_view).cast<float>();
+            Vector2f offset =
+                (node_position.head<2>() - camera_position.head<2>() + mouse)
+                    .cwiseProduct(depth) *
+                m_parallax.amount;
+            model = Affine3d(Translation3d(Vector3d(offset.x(), offset.y(), 0.0f))).matrix() *
+                    model;
+        }
+    }
+
+    if (apply_geometry_transform) {
+        model *= pNode->GeometryTransform();
+        if (pNode->Mesh()) model *= pNode->Mesh()->GeometryTransform();
+    }
+    return SceneNodeRenderTransform {
+        .model                 = model,
+        .view_projection       = view_projection,
+        .model_view_projection = view_projection * model,
+    };
+}
+
+void SceneUniformUpdater::UpdateUniforms(SceneNode* pNode, sprite_map_t& sprites,
+                                         const UpdateUniformOp& updateOp,
+                                         SceneRenderViewKind render_view,
+                                         SceneRenderAlphaMode alpha_mode) {
+    if (! pNode->Mesh()) return;
+
+    pNode->UpdateTrans();
+
+    SceneCamera*     camera;
+    std::string_view cam_name = pNode->Camera();
+    if (! pNode->Camera().empty()) {
+        camera = m_scene->cameras.at(cam_name.data()).get();
+    } else if (pNode->Perspective()) {
+        cam_name = "global_perspective";
+        camera   = m_scene->cameras.at(cam_name.data()).get();
+    } else
+        camera = m_scene->activeCamera;
+
+    if (! camera) return;
+
+    auto* material = pNode->Mesh()->Material();
+    if (! material) return;
+    // auto& shadervs = material->customShader.updateValueList;
+    // const auto& valueSet = material->customShader.valueSet;
+
+    auto info_it = m_nodeUniformInfoMap.find(pNode);
+    rstd_assert(info_it != m_nodeUniformInfoMap.end());
+    const auto& info = info_it->second;
+
+    auto  node_data_it = m_nodeDataMap.find(pNode);
+    bool  hasNodeData  = node_data_it != m_nodeDataMap.end();
+    auto* nodeDataPtr  = hasNodeData ? &node_data_it->second : nullptr;
+    if (hasNodeData) {
+        auto& nodeData = *nodeDataPtr;
+        for (const auto& el : nodeData.renderTargets) {
+            auto rt_it = m_scene->renderTargets.find(el.second);
+            if (rt_it == m_scene->renderTargets.end()) continue;
+            const auto& rt = rt_it->second;
+
+            const auto& unifrom_tex = info.texs[el.first];
+
+            if (unifrom_tex.has_resolution) {
+                std::array<i32, 4> resolution_uint({ rt.PhysicalWidth(),
+                                                     rt.PhysicalHeight(),
+                                                     rt.PhysicalWidth(),
+                                                     rt.PhysicalHeight() });
+                updateOp(WE_GLTEX_RESOLUTION_NAMES[el.first],
+                         ShaderValue(array_cast<float>(resolution_uint)));
+            }
+            if (unifrom_tex.has_mipmap) {
+                updateOp(WE_GLTEX_MIPMAPINFO_NAMES[el.first], (float)rt.mipmap_level);
+            }
+        }
+        if (nodeData.puppet_layer && nodeData.puppet_layer->hasPuppet() &&
+            (info.has_BONES || info.has_BONESALPHA)) {
+            auto data = nodeData.puppet_layer->genFrame(m_scene->elapsingTime);
+            if (info.has_BONES) {
+                updateOp(G_BONES, std::span<const float> { data[0].data(), data.size() * 16 });
+            }
+            // Per-bone opacity envelope for the same frame. genFrame() above
+            // refreshed it; reading it here costs nothing and must not advance
+            // the animation clock a second time. std140 gives each scalar array
+            // element its own 16-byte register, so pack into .x and zero .yzw —
+            // uploading them contiguously would leave every bone past the first
+            // quarter reading padding (i.e. fully transparent).
+            if (info.has_BONESALPHA) {
+                auto alphas = nodeData.puppet_layer->boneAlphas();
+                if (! alphas.empty()) {
+                    m_bone_alpha_pack_scratch.assign(alphas.size() * 4, 0.0f);
+                    for (std::size_t i = 0; i < alphas.size(); ++i) {
+                        m_bone_alpha_pack_scratch[i * 4] = alphas[i];
+                    }
+                    updateOp(G_BONESALPHA, std::span<const float>(m_bone_alpha_pack_scratch));
+                }
+            }
+        }
+    }
+
+    bool reqMI    = info.has_MI;
+    bool reqM     = info.has_M;
+    bool reqAM    = info.has_AM;
+    bool reqMVP   = info.has_MVP;
+    bool reqMVPI  = info.has_MVPI;
+    bool reqEMVP  = info.has_EMVP;
+    bool reqEMVPI = info.has_EMVPI;
+    bool reqEffectModel =
+        info.has_EFFECTMODELMATRIX || reqEMVP || reqEMVPI || info.has_LAYERMODELMATRIX;
+    bool reqETVP  = info.has_ETVP;
+    bool reqETVPI = info.has_ETVPI;
+
+    auto node_render_transform = NodeRenderTransform(pNode, render_view);
+    if (! node_render_transform) return;
+    Matrix4d viewProTrans = node_render_transform->view_projection;
+
+    if (info.has_VP) {
+        updateOp(G_VP, ShaderValue::fromMatrix(viewProTrans));
+    }
+    if (info.has_EYEPOSITION && hasNodeData) {
+        if (nodeDataPtr->eye_position_override.has_value()) {
+            updateOp(G_EYEPOSITION, *nodeDataPtr->eye_position_override);
+        } else if (nodeDataPtr->use_camera_eye_position || camera->IsPerspective()) {
+            const auto eye = camera->GetPosition(render_view).cast<float>();
+            updateOp(G_EYEPOSITION, std::array<float, 3> { eye.x(), eye.y(), eye.z() });
+        }
+    }
+    if (reqM || info.has_NORMALMODELMATRIX || reqMVP || reqMI || reqMVPI || reqEffectModel) {
+        Matrix4d modelTrans = node_render_transform->model;
+
+        if (reqM) updateOp(G_M, ShaderValue::fromMatrix(modelTrans));
+        if (info.has_NORMALMODELMATRIX) {
+            Matrix3d normal_model = modelTrans.block<3, 3>(0, 0);
+            if (std::abs(normal_model.determinant()) > 1e-12)
+                normal_model = normal_model.inverse().transpose();
+            else
+                normal_model.setIdentity();
+            updateOp(G_NORMALMODELMATRIX, ShaderValue::fromMatrix(normal_model));
+        }
+        if (reqAM) updateOp(G_AM, ShaderValue::fromMatrix(modelTrans));
+        if (reqMI) updateOp(G_MI, ShaderValue::fromMatrix(modelTrans.inverse()));
+        if (reqMVP) {
+            Matrix4d mvpTrans = viewProTrans * modelTrans;
+            updateOp(G_MVP, ShaderValue::fromMatrix(mvpTrans));
+            if (reqMVPI) updateOp(G_MVPI, ShaderValue::fromMatrix(mvpTrans.inverse()));
+        }
+        if (reqEffectModel) {
+            const bool composites_to_screen =
+                cam_name.empty() && camera == m_scene->activeCamera;
+            Matrix4d layerModel  = modelTrans;
+            Matrix4d effectModel = modelTrans;
+            if (! composites_to_screen && hasNodeData &&
+                nodeDataPtr->effect_projection_node != nullptr) {
+                const auto& nodeData = *nodeDataPtr;
+                auto*       source   = nodeData.effect_projection_node;
+                source->UpdateTrans();
+                layerModel  = source->ModelTrans() * source->GeometryTransform();
+                effectModel = layerModel;
+                if (nodeData.effect_projection_size[0] > 0.0f &&
+                    nodeData.effect_projection_size[1] > 0.0f) {
+                    effectModel =
+                        effectModel *
+                        Affine3d(
+                            Scaling(static_cast<double>(nodeData.effect_projection_size[0]) * 0.5,
+                                    static_cast<double>(nodeData.effect_projection_size[1]) * 0.5,
+                                    1.0))
+                            .matrix();
+                }
+            }
+            if (info.has_LAYERMODELMATRIX)
+                updateOp(G_LAYERMODELMATRIX, ShaderValue::fromMatrix(layerModel));
+            if (info.has_EFFECTMODELMATRIX)
+                updateOp(G_EFFECTMODELMATRIX, ShaderValue::fromMatrix(effectModel));
+            if (reqEMVP || reqEMVPI) {
+                const Matrix4d effect_mvp = composites_to_screen
+                                                ? viewProTrans * effectModel
+                                                : m_scene->activeCamera
+                                                      ? m_scene->activeCamera->GetViewProjectionMatrix(
+                                                            render_view) *
+                                                            effectModel
+                                                      : camera->GetViewProjectionMatrix(render_view) *
+                                                            effectModel;
+                if (reqEMVP) updateOp(G_EMVP, ShaderValue::fromMatrix(effect_mvp));
+                if (reqEMVPI)
+                    updateOp(G_EFFECTMODELVIEWPROJECTIONMATRIXINVERSE,
+                             ShaderValue::fromMatrix(effect_mvp.inverse()));
+            }
+        }
+        if (reqETVP || reqETVPI) {
+            /*
+            Vector3d nodePos = pNode->Translate().cast<double>();
+            nodePos.z()      = 1.0f;
+            Matrix4d etvpTrans =
+                viewProTrans * modelTrans * Affine3d(Eigen::Scaling(nodePos)).matrix();
+            if (reqETVPI) updateOp(G_ETVP, ShaderValue::fromMatrix(etvpTrans));
+            if (reqETVPI) updateOp(G_ETVPI, ShaderValue::fromMatrix(etvpTrans.inverse()));
+            */
+        }
+    }
+
+    //	g_EffectTextureProjectionMatrix
+    // shadervs.push_back({"g_EffectTextureProjectionMatrixInverse",
+    // ShaderValue::ValueOf(Eigen::Matrix4f::Identity())});
+    if (info.has_TIME) updateOp(G_TIME, (float)m_scene->elapsingTime);
+
+    if (info.has_FRAMETIME) updateOp(G_FRAMETIME, (float)m_scene->frameTime);
+
+    if (info.has_DAYTIME) updateOp(G_DAYTIME, (float)m_dayTime);
+    if (info.has_DAYTIME_LEGACY) updateOp(G_DAYTIME_LEGACY, (float)m_dayTime);
+
+    if (info.has_POINTERPOSITION) updateOp(G_POINTERPOSITION, m_pointerPos);
+    if (info.has_POINTERPOSITIONLAST) updateOp(G_POINTERPOSITIONLAST, m_pointerPosLast);
+
+    if (info.has_TEXELSIZE) updateOp(G_TEXELSIZE, m_texelSize);
+
+    if (info.has_TEXELSIZEHALF)
+        updateOp(G_TEXELSIZEHALF, std::array { m_texelSize[0] / 2.0f, m_texelSize[1] / 2.0f });
+
+    if (info.has_SCREEN)
+        updateOp(G_SCREEN,
+                 std::array<float, 3> {
+                     m_screen_size[0], m_screen_size[1], m_screen_size[0] / m_screen_size[1] });
+
+    if (info.has_PARALLAXPOSITION) {
+        Vector2f para { 0.5f, 0.5f };
+        if (m_parallax.enable) {
+            const Vector2f mouseCentered =
+                Vector2f(&m_parallaxMousePos[0]) - Vector2f { 0.5f, 0.5f };
+            para = Vector2f { 0.5f, 0.5f } +
+                   (Scaling(1.0f, -1.0f) * mouseCentered) * m_parallax.mouseinfluence;
+        }
+        updateOp(G_PARALLAXPOSITION, std::array { para[0], para[1] });
+    }
+
+    const auto& anim_override = pNode->TexAnim();
+    for (auto& [i, sp] : sprites) {
+        // Script-driven override:
+        //   current_frame >= 0  → pin to that frame
+        //   playing == false    → freeze on current auto-advance frame
+        //   else                → normal time-driven advance
+        const SpriteFrame* fp = nullptr;
+        if (anim_override.current_frame >= 0 && sp.numFrames() > 0) {
+            const i32 idx = i32(anim_override.current_frame) % i32(sp.numFrames());
+            fp            = &sp.GetFrame(idx);
+        } else if (! anim_override.playing && sp.numFrames() > 0) {
+            fp = &sp.GetCurFrame();
+        } else {
+            fp = &sp.GetAnimateFrame(m_scene->frameTime);
+        }
+        const auto& f      = *fp;
+        auto        grot   = WE_GLTEX_ROTATION_NAMES[i];
+        auto        gtrans = WE_GLTEX_TRANSLATION_NAMES[i];
+        updateOp(grot, std::array { f.xAxis[0], f.xAxis[1], f.yAxis[0], f.yAxis[1] });
+        updateOp(gtrans, std::array { f.x, f.y });
+    }
+
+    // WE's `g_LightsPosition[4]` is a vec3 array; std140 pads to vec4 stride
+    // (16B) so the trailing scalar slot stays at 0.
+    if (info.has_LP) {
+        constexpr unsigned                kMaxLights = 4;
+        std::array<float, kMaxLights * 4> lights_pos { 0 };
+        std::array<float, kMaxLights * 4> lights_color_radius { 0 };
+        std::array<float, 12>             lights_color_legacy { 0 };
+        std::array<float, kMaxLights * 4> lights_direction_type { 0 };
+        std::array<float, kMaxLights * 4> lights_cone_exponent { 0 };
+        std::array<float, kMaxLights>     lights_cast_shadow { 0 };
+        for (unsigned light = 0; light < kMaxLights; ++light)
+            lights_direction_type[light * 4 + 3] = -1.0f;
+        unsigned                          i = 0;
+        for (auto& l : m_scene->lights) {
+            if (i == kMaxLights) break;
+            if (! l->runtimeVisible()) {
+                i++;
+                continue;
+            }
+            rstd_assert(l->node() != nullptr);
+            auto* light_node = l->node();
+            light_node->UpdateTrans();
+            const auto transform           = light_node->ModelTrans();
+            const auto trans               = transform.block<3, 1>(0, 3).cast<float>();
+            lights_pos[i * 4 + 0]          = trans.x();
+            lights_pos[i * 4 + 1]          = trans.y();
+            lights_pos[i * 4 + 2]          = trans.z();
+            lights_pos[i * 4 + 3]          = 0.0f;
+            auto color = l->color();
+            if (light_node->IsColorOverridden())
+                color = light_node->Color() * l->desc().intensity;
+            lights_color_radius[i * 4 + 0] = color.x();
+            lights_color_radius[i * 4 + 1] = color.y();
+            lights_color_radius[i * 4 + 2] = color.z();
+            lights_color_radius[i * 4 + 3] = l->radius();
+            Eigen::Vector3d local_direction = Eigen::Vector3d::UnitX();
+            if (l->type() != SceneLightType::Spot) local_direction = -local_direction;
+            const auto direction =
+                (transform.block<3, 3>(0, 0) * local_direction).normalized().cast<float>();
+            lights_direction_type[i * 4 + 0] = direction.x();
+            lights_direction_type[i * 4 + 1] = direction.y();
+            lights_direction_type[i * 4 + 2] = direction.z();
+            lights_direction_type[i * 4 + 3] = static_cast<float>(l->type());
+            lights_cone_exponent[i * 4 + 0]  = l->desc().inner_cone_cos;
+            lights_cone_exponent[i * 4 + 1]  = l->desc().outer_cone_cos;
+            lights_cone_exponent[i * 4 + 2]  = l->desc().exponent;
+            lights_cast_shadow[i]            = l->desc().cast_shadow ? 1.0f : 0.0f;
+            if (i < 3) {
+                const auto cp = color * l->radius() * l->radius();
+                std::copy(cp.begin(), cp.end(), lights_color_legacy.begin() + i * 4);
+            }
+            i++;
+        }
+        updateOp(G_LP, lights_pos);
+        updateOp(G_LCP, lights_color_legacy);
+        updateOp(G_LCR, lights_color_radius);
+        if (info.has_LIGHTDIRECTIONTYPE)
+            updateOp(G_LIGHTDIRECTIONTYPE, lights_direction_type);
+        if (info.has_LIGHTCONEEXPONENT)
+            updateOp(G_LIGHTCONEEXPONENT, lights_cone_exponent);
+        if (info.has_LIGHTCASTSHADOW) updateOp(G_LIGHTCASTSHADOW, lights_cast_shadow);
+    }
+
+    // Script-driven per-frame overrides. updateOp overlays the material's
+    // baked constValue for this draw; we only push when the script has
+    // actually written to avoid clobbering the bake.
+    auto push_color4 = [&updateOp](const Eigen::Vector3f& color, float alpha) {
+        updateOp(G_COLOR4, std::array<float, 4> { color.x(), color.y(), color.z(), alpha });
+    };
+    auto push_color = [&updateOp](const Eigen::Vector3f& color) {
+        updateOp(G_COLOR, std::array<float, 3> { color.x(), color.y(), color.z() });
+    };
+    if (pNode->IsAlphaOverridden(alpha_mode)) {
+        const float eff_alpha = pNode->EffectiveAlpha(alpha_mode);
+        if (info.has_USERALPHA) {
+            updateOp(G_USERALPHA, eff_alpha);
+        }
+        if (info.has_ALPHA) {
+            updateOp(G_ALPHA, eff_alpha);
+        }
+        if (info.has_COLOR4) {
+            if (! info.has_USERALPHA) {
+                push_color4(pNode->IsColorOverridden() ? pNode->Color() : pNode->BaseColor(),
+                            eff_alpha);
+            } else if (pNode->IsColorOverridden()) {
+                push_color4(pNode->Color(), pNode->BaseAlpha());
+            }
+        }
+        if (info.has_COLOR && pNode->IsColorOverridden()) {
+            push_color(pNode->Color());
+        }
+    } else if (pNode->IsColorOverridden()) {
+        if (info.has_COLOR4) {
+            push_color4(pNode->Color(), pNode->BaseAlpha());
+        }
+        if (info.has_COLOR) {
+            push_color(pNode->Color());
+        }
+    }
+    if (pNode->IsBrightnessOverridden() && info.has_BRIGHTNESS) {
+        updateOp(G_BRIGHTNESS, pNode->Brightness());
+    }
+
+    // WE audio-bar shaders. std140 array stride is 16 bytes per element, so
+    // pack each already-smoothed amplitude into .x and leave .yzw at zero.
+    auto push_audio = [&](std::string_view name, std::span<const float> visual) {
+        const std::size_t count = visual.size() * 4;
+        rstd_assert(count <= m_audio_pack_scratch.size());
+        std::span<float> packed(m_audio_pack_scratch.data(), count);
+        std::fill(packed.begin(), packed.end(), 0.0f);
+        for (std::size_t i = 0; i < visual.size(); ++i) packed[i * 4] = visual[i];
+        updateOp(name, std::span<const float>(packed));
+    };
+    if (info.has_audio_16_l) push_audio(G_AUDIO_SPEC_16_L, m_audio_16_l);
+    if (info.has_audio_16_r) push_audio(G_AUDIO_SPEC_16_R, m_audio_16_r);
+    if (info.has_audio_32_l) push_audio(G_AUDIO_SPEC_32_L, m_audio_32_l);
+    if (info.has_audio_32_r) push_audio(G_AUDIO_SPEC_32_R, m_audio_32_r);
+    if (info.has_audio_64_l) push_audio(G_AUDIO_SPEC_64_L, m_audio_64_l);
+    if (info.has_audio_64_r) push_audio(G_AUDIO_SPEC_64_R, m_audio_64_r);
+}
+
+void SceneUniformUpdater::SetNodeData(void* nodeAddr, const SceneUniformNodeData& data) {
+    m_nodeDataMap[nodeAddr] = data;
+}
+
+std::shared_ptr<WPPuppetLayer> SceneUniformUpdater::PuppetLayerForNode(void* nodeAddr) const {
+    auto it = m_nodeDataMap.find(nodeAddr);
+    return it == m_nodeDataMap.end() ? nullptr : it->second.puppet_layer;
+}
+
+void SceneUniformUpdater::CopyNodeData(void* src, void* dst) {
+    auto it = m_nodeDataMap.find(src);
+    if (it == m_nodeDataMap.end()) return;
+    m_nodeDataMap[dst] = it->second;
+}
+
+void SceneUniformUpdater::SetTexelSize(float x, float y) { m_texelSize = { x, y }; }
+
+void SceneUniformUpdater::SetAudioSpectrum(std::span<const float, 64> left,
+                                           std::span<const float, 64> right) {
+    AverageResample64(left, m_audio_16_l);
+    AverageResample64(right, m_audio_16_r);
+    AverageResample64(left, m_audio_32_l);
+    AverageResample64(right, m_audio_32_r);
+    AverageResample64(left, m_audio_64_l);
+    AverageResample64(right, m_audio_64_r);
+}

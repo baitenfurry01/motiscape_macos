@@ -1,0 +1,33 @@
+# Local files and credentials
+.DS_Store
+.env
+.env.*
+.secrets/
+*.p12
+*.p8
+*.pfx
+*.mobileprovision
+xcuserdata/
+*.xcuserstate
+
+# Build outputs and local dependencies
+.build/
+build/
+bin/
+obj/
+dist/
+release/
+DerivedData/
+CMakeFiles/
+CMakeCache.txt
+CMakeUserPresets.json
+compile_commands.json
+*.app/
+*.dSYM/
+*.o
+*.a
+*.dylib
+*.pcm
+*.profraw
+*.profdata
+node_modules/

@@ -1,0 +1,70 @@
+/* Strings shipped with the external Agent Apps. */
+"App 内没有找到 Motiscape 屏保组件" = "motiscape screen saver component not found in the app";
+"Invalid wallpaper agent request" = "Invalid wallpaper agent request";
+"Motiscape 屏保组件不完整" = "motiscape screen saver component is incomplete";
+"Unsupported media command: %@" = "Unsupported media command: %@";
+"屏保与锁屏插件暂不可用。" = "The Screen Saver and Lock Screen plugin is temporarily unavailable.";
+"不支持" = "Not supported";
+"不支持此请求" = "This request is not supported";
+"动态锁屏共享容器不可用" = "Dynamic Lock Screen shared container is unavailable";
+"动态锁屏已关闭" = "Dynamic lock screen is off";
+"动态锁屏已就绪" = "Dynamic lock screen is ready";
+"动态锁屏已载入，请在系统墙纸设置中选择 Motiscape" = "Dynamic lock screen loaded. Select motiscape in System Wallpaper Settings.";
+"动态锁屏已连接，等待画面就绪" = "Connected. Waiting for the wallpaper to become ready.";
+"动态锁屏恢复失败" = "Dynamic lock screen recovery failed";
+"动态锁屏恢复失败，请重试；详细原因已写入日志" = "Could not restore the dynamic lock screen. Try again; details have been saved to the log.";
+"动态锁屏配置无法读取，请检查文件访问权限或重新设置壁纸" = "Could not read the lock screen configuration. Check file access permissions or set the wallpaper again.";
+"动态锁屏需要完全磁盘访问权限" = "Dynamic Lock Screen Requires Full Disk Access";
+"场景" = "Scene";
+"基础壁纸无效" = "The base wallpaper is invalid";
+"填充" = "Fill";
+"屏保与锁屏" = "Screen Saver and Lock Screen";
+"屏保与锁屏插件正在由另一个 motiscape 使用。请先退出另一个 motiscape。" = "The Screen Saver and Lock Screen plugin is being used by another motiscape. Quit the other motiscape first.";
+"屏保动态锁屏需要 macOS 14.2 或更高版本" = "Screen Saver Dynamic Lock Screen requires macOS 14.2 or later";
+"屏保安装校验失败" = "Screen saver installation verification failed";
+"已启用，请设置锁屏壁纸" = "Enabled. Set a lock screen wallpaper to continue.";
+"当前壁纸不能用作动态锁屏" = "The current wallpaper cannot be used as Dynamic Lock Screen";
+"当前壁纸不能用作屏保" = "The current wallpaper cannot be used as a screen saver";
+"拉伸" = "Stretch";
+"插件响应超时：%@" = "Plugin response timed out: %@";
+"插件尚未启动" = "The plugin has not started.";
+"插件未连接" = "The plugin is not connected";
+"插件正在退出" = "The plugin is quitting.";
+"插件消息无效" = "Invalid plugin message";
+"插件消息过大" = "The plugin message is too large";
+"插件连接已关闭" = "The plugin connection is closed";
+"插件连接已结束" = "The plugin connection has ended";
+"无法保存动态锁屏状态" = "Could not save the dynamic lock screen state";
+"无法恢复上次的系统设置，请检查插件权限后重试" = "Unable to restore the previous system settings. Check the plugin’s permissions and try again.";
+"无法生成屏保配置" = "Could not create the screen saver configuration";
+"无法结束旧的系统屏保进程，请稍后重试" = "Could not stop the previous system screen saver process. Try again later.";
+"无法访问系统墙纸配置" = "Unable to access the system wallpaper configuration";
+"未连接的显示器" = "Disconnected display";
+"歌曲信息" = "Song Information";
+"正在连接动态锁屏" = "Connecting to the dynamic lock screen…";
+"系统墙纸配置已被其他程序修改，请稍后重试" = "The system wallpaper configuration was modified by another process. Try again later.";
+"系统墙纸配置已被用户修改，Motiscape 未覆盖当前设置" = "The system wallpaper configuration was changed by the user. motiscape did not overwrite the current settings.";
+"系统墙纸配置格式不受支持" = "The system wallpaper configuration format is unsupported";
+"缺少基础壁纸" = "Missing base wallpaper";
+"网页" = "Web";
+"视频" = "Video";
+"请先开启动态锁屏并完成确认" = "Enable Dynamic Lock Screen and complete confirmation first";
+"请先开启屏保动态锁屏并完成确认" = "Enable Screen Saver Dynamic Lock Screen and complete confirmation first";
+"请先播放一张壁纸" = "Please play a wallpaper first";
+"请打开系统墙纸设置以载入动态锁屏" = "Open System Wallpaper Settings to load the dynamic lock screen.";
+"适应" = "Fit";
+"预设循环依赖" = "Circular Preset Dependency";
+
+"Steam 服务" = "Steam service";
+
+"Steam 服务插件未连接" = "Steam service plugin is not connected";
+
+"Steam 服务尚未退出，请重试" = "The Steam service has not exited. Please retry.";
+
+"Steam 插件配置无效" = "Invalid Steam plugin configuration";
+
+"Steam 插件尚未配置" = "The Steam plugin has not been configured";
+
+"下载任务标识冲突" = "Conflicting download attempt identifier";
+
+"正在等待 Steam 下载停止，请重试" = "Waiting for Steam downloads to stop. Please retry.";

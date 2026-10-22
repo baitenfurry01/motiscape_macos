@@ -1,0 +1,1525 @@
+module;
+
+#include <rstd/macro.hpp>
+
+#include <ft2build.h>
+#include FT_FREETYPE_H
+#include FT_TRUETYPE_TABLES_H
+
+#include <fontconfig/fontconfig.h>
+module sr.text;
+import sr.spec_texs;
+import sr.core;
+import sr.types;
+import rstd.log;
+import rstd.cppstd;
+import sr.scene;
+import sr.shader_compile;
+import sr.fs;
+
+namespace sr::text
+{
+
+namespace
+{
+
+constexpr std::uint32_t kMinAtlasDim { 1024 };
+
+// WE text layers are frequently rendered at a small point size and enlarged
+// by their own transform or a parent text layer. Rasterising glyphs at 2x
+// while keeping layout in logical pixels preserves the edge samples needed by
+// that later transform.
+constexpr std::uint32_t kGlyphRasterScale { 2 };
+
+// 4×4 white cell at (0,0) so a single-channel atlas can also serve solid-fill
+// quads (e.g. opaquebackground rectangle) and as a tofu fallback when the
+// atlas overflows.
+constexpr std::uint32_t kWhiteCellSize { 4 };
+
+// True for Unicode whitespace/format codepoints that carry layout advance but
+// no visible ink (regular space, NBSP, the fixed-width spaces, narrow/zero-
+// width no-break spaces, etc.). These must NOT be routed through the
+// fontconfig glyph fallback: a fallback face resolves e.g. U+202F to its own
+// narrow-space advance, collapsing the spacing the primary font (and the
+// scene's clock/date scripts) were laid out against. Keeping them on the
+// primary face preserves that font's advance for the codepoint.
+bool IsLayoutWhitespace(std::uint32_t cp) {
+    switch (cp) {
+    case 0x0020: // space
+    case 0x00A0: // no-break space
+    case 0x2000: // en quad
+    case 0x2001: // em quad
+    case 0x2002: // en space
+    case 0x2003: // em space
+    case 0x2004: // three-per-em space
+    case 0x2005: // four-per-em space
+    case 0x2006: // six-per-em space
+    case 0x2007: // figure space
+    case 0x2008: // punctuation space
+    case 0x2009: // thin space
+    case 0x200A: // hair space
+    case 0x202F: // narrow no-break space
+    case 0x205F: // medium mathematical space
+    case 0x3000: // ideographic space
+        return true;
+    default:
+        return false;
+    }
+}
+
+std::uint32_t AtlasDimForPixelSize(std::uint32_t pixel_size) {
+    std::uint32_t dim      = kMinAtlasDim;
+    std::uint32_t required = pixel_size * 12;
+    while (dim < required && dim < 4096) dim *= 2;
+    return dim;
+}
+
+class FtLibrary {
+public:
+    static FtLibrary& Get() {
+        static FtLibrary inst;
+        return inst;
+    }
+    FT_Library handle() const noexcept { return m_lib; }
+
+private:
+    FtLibrary() {
+        if (FT_Init_FreeType(&m_lib) != 0) {
+            rstd_error("FT_Init_FreeType failed");
+            m_lib = nullptr;
+        }
+    }
+    ~FtLibrary() {
+        if (m_lib != nullptr) FT_Done_FreeType(m_lib);
+    }
+    FtLibrary(const FtLibrary&)            = delete;
+    FtLibrary& operator=(const FtLibrary&) = delete;
+
+    FT_Library m_lib { nullptr };
+};
+
+std::uint64_t HashBlob(std::span<const std::byte> blob) {
+    // FNV-1a 64. Good enough for keying — collisions only matter if the
+    // caller hands us two genuinely different fonts whose hashes collide,
+    // which is fine since the underlying FT_Face open is the source of truth
+    // (we cache per-pixel-size below the blob).
+    std::uint64_t h = 1469598103934665603ull;
+    for (std::byte b : blob) {
+        h ^= static_cast<std::uint64_t>(std::to_integer<std::uint8_t>(b));
+        h *= 1099511628211ull;
+    }
+    return h;
+}
+
+bool IsFontExt(const std::filesystem::path& p) {
+    auto ext = p.extension().string();
+    for (auto& c : ext) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    return ext == ".ttf" || ext == ".otf" || ext == ".ttc";
+}
+
+std::shared_ptr<std::vector<std::byte>> ReadAll(const std::filesystem::path& path) {
+    std::ifstream f(path, std::ios::binary | std::ios::ate);
+    if (! f) return nullptr;
+    auto size = f.tellg();
+    if (size <= 0) return nullptr;
+    f.seekg(0, std::ios::beg);
+    auto buf = std::make_shared<std::vector<std::byte>>(static_cast<std::size_t>(size));
+    if (! f.read(reinterpret_cast<char*>(buf->data()), size)) return nullptr;
+    return buf;
+}
+
+struct FontCandidate {
+    std::filesystem::path path;
+    std::int32_t          face_index { 0 };
+};
+
+bool IsLastResortName(std::string_view name) {
+    std::string normalized(name);
+    for (auto& c : normalized) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    return normalized == "lastresort" || normalized == ".lastresort";
+}
+
+bool IsLastResortFace(FT_Face face) {
+    if (face == nullptr) return true;
+    if (face->family_name && IsLastResortName(face->family_name)) return true;
+    const auto* name = FT_Get_Postscript_Name(face);
+    if (name && IsLastResortName(name)) return true;
+    const auto* header = static_cast<const TT_Header*>(FT_Get_Sfnt_Table(face, ft_sfnt_head));
+    return header && (header->Flags & (1u << 14)) != 0;
+}
+
+bool SetFontPixelSize(FT_Face face, std::uint32_t size) {
+    if (FT_Set_Pixel_Sizes(face, 0, size) == 0) return true;
+    if (face->num_fixed_sizes <= 0) return false;
+    int best = 0;
+    for (int i = 1; i < face->num_fixed_sizes; ++i) {
+        const auto distance = std::abs(static_cast<double>(face->available_sizes[i].y_ppem) -
+                                       static_cast<double>(size) * 64.0);
+        const auto best_distance =
+            std::abs(static_cast<double>(face->available_sizes[best].y_ppem) -
+                     static_cast<double>(size) * 64.0);
+        if (distance < best_distance) best = i;
+    }
+    return FT_Select_Size(face, best) == 0;
+}
+
+float FontLayoutScale(FT_Face face, std::uint32_t raster_size) {
+    const auto actual_size = face->size->metrics.y_ppem;
+    return actual_size > 0
+               ? static_cast<float>(raster_size) /
+                     (static_cast<float>(actual_size) * static_cast<float>(kGlyphRasterScale))
+               : 1.0f / static_cast<float>(kGlyphRasterScale);
+}
+
+bool LoadRenderableGlyph(FT_Face face, std::uint32_t codepoint) {
+    if (IsLastResortFace(face)) return false;
+    const auto index = FT_Get_Char_Index(face, codepoint);
+    if (index == 0 ||
+        FT_Load_Glyph(face, index, FT_LOAD_RENDER | FT_LOAD_TARGET_NORMAL | FT_LOAD_COLOR) != 0)
+        return false;
+    const auto& bitmap = face->glyph->bitmap;
+    if (bitmap.width == 0 || bitmap.rows == 0) return true;
+    if (bitmap.buffer == nullptr) return false;
+    switch (bitmap.pixel_mode) {
+    case FT_PIXEL_MODE_GRAY: return bitmap.num_grays > 1;
+    case FT_PIXEL_MODE_MONO:
+    case FT_PIXEL_MODE_GRAY2:
+    case FT_PIXEL_MODE_GRAY4:
+    case FT_PIXEL_MODE_BGRA: return true;
+    default: return false;
+    }
+}
+
+std::vector<FontCandidate> FontconfigCandidates(FcPattern*                   pattern,
+                                                std::optional<std::uint32_t> codepoint = {}) {
+    FcConfigSubstitute(nullptr, pattern, FcMatchPattern);
+    FcDefaultSubstitute(pattern);
+    FcResult                   result = FcResultNoMatch;
+    FcFontSet*                 fonts  = FcFontSort(nullptr, pattern, FcFalse, nullptr, &result);
+    std::vector<FontCandidate> candidates;
+    if (fonts == nullptr) return candidates;
+    for (int i = 0; i < fonts->nfont; ++i) {
+        FcPattern* font = fonts->fonts[i];
+        if (codepoint) {
+            FcCharSet* charset = nullptr;
+            if (FcPatternGetCharSet(font, FC_CHARSET, 0, &charset) != FcResultMatch ||
+                charset == nullptr || ! FcCharSetHasChar(charset, *codepoint))
+                continue;
+        }
+        FcChar8* file  = nullptr;
+        int      index = 0;
+        if (FcPatternGetString(font, FC_FILE, 0, &file) != FcResultMatch || file == nullptr)
+            continue;
+        (void)FcPatternGetInteger(font, FC_INDEX, 0, &index);
+        std::filesystem::path path(reinterpret_cast<const char*>(file));
+        if (index < 0 || IsLastResortName(path.stem().string())) continue;
+        candidates.push_back({ std::move(path), index });
+    }
+    FcFontSetDestroy(fonts);
+    return candidates;
+}
+
+std::vector<FontCandidate> ResolveFontconfigCodepoint(std::uint32_t codepoint) {
+    if (! FcInit()) return {};
+
+    FcPattern* pat = FcPatternCreate();
+    if (pat == nullptr) return {};
+    FcCharSet* charset = FcCharSetCreate();
+    if (charset == nullptr) {
+        FcPatternDestroy(pat);
+        return {};
+    }
+    FcCharSetAddChar(charset, static_cast<FcChar32>(codepoint));
+    FcPatternAddCharSet(pat, FC_CHARSET, charset);
+    FcPatternAddBool(pat, FC_SCALABLE, FcTrue);
+    auto candidates = FontconfigCandidates(pat, codepoint);
+    FcCharSetDestroy(charset);
+    FcPatternDestroy(pat);
+    return candidates;
+}
+
+} // namespace
+
+// -- FontFace -------------------------------------------------------------
+
+struct FontFace::Impl {
+    struct FallbackFace {
+        std::shared_ptr<std::vector<std::byte>> blob;
+        FT_Face                                 face { nullptr };
+
+        ~FallbackFace() {
+            if (face != nullptr) FT_Done_Face(face);
+        }
+    };
+
+    std::shared_ptr<std::vector<std::byte>> blob;
+    FT_Face                                 face { nullptr };
+    std::uint32_t                           pixel_size { 0 };        // logical layout pixels
+    std::uint32_t                           raster_pixel_size { 0 }; // FreeType/atlas pixels
+
+    std::uint32_t             atlas_w { kMinAtlasDim };
+    std::uint32_t             atlas_h { kMinAtlasDim };
+    std::vector<std::uint8_t> atlas;
+
+    // Shelf packer state: pen advances along the current shelf, falls to a
+    // new shelf when the next glyph won't fit horizontally.
+    std::uint32_t pen_x { 0 };
+    std::uint32_t pen_y { 0 };
+    std::uint32_t shelf_h { 0 };
+
+    std::unordered_map<std::uint32_t, GlyphInfo>                   glyphs;
+    std::unordered_map<std::string, std::unique_ptr<FallbackFace>> fallback_faces;
+    std::unordered_map<std::string, std::shared_ptr<std::vector<std::byte>>> fallback_blobs;
+    std::unordered_map<std::uint32_t, FT_Face>                     fallback_by_codepoint;
+    std::unordered_set<std::uint32_t>                              fallback_misses;
+
+    // Pixel-coord rects pushed by Populate() — drained once per frame by
+    // the renderer to vkCmdCopyBufferToImage just the changed regions.
+    std::vector<AtlasDirtyRect> dirty_rects;
+
+    // Set by FontCache::GetFace; consumed by the renderer's per-frame
+    // atlas-commit hook to look the face's VkImage up by URL.
+    std::string atlas_url;
+    std::shared_ptr<std::size_t> layout_users { std::make_shared<std::size_t>(0) };
+
+    ~Impl() {
+        if (face != nullptr) FT_Done_Face(face);
+    }
+
+    Impl() {
+        atlas.assign(static_cast<std::size_t>(atlas_w) * atlas_h, 0);
+        SeedWhiteCell();
+    }
+
+    void ResetAtlas(std::uint32_t dim) {
+        atlas_w = dim;
+        atlas_h = dim;
+        atlas.assign(static_cast<std::size_t>(atlas_w) * atlas_h, 0);
+        dirty_rects.clear();
+        glyphs.clear();
+        pen_x   = 0;
+        pen_y   = 0;
+        shelf_h = 0;
+        SeedWhiteCell();
+    }
+
+    void SeedWhiteCell() {
+        for (std::uint32_t y = 0; y < kWhiteCellSize; ++y) {
+            for (std::uint32_t x = 0; x < kWhiteCellSize; ++x) {
+                atlas[y * atlas_w + x] = 0xFF;
+            }
+        }
+        pen_x   = kWhiteCellSize + 1;
+        pen_y   = 0;
+        shelf_h = kWhiteCellSize;
+        dirty_rects.push_back({ 0, 0, kWhiteCellSize, kWhiteCellSize });
+    }
+
+    bool ReserveSlot(std::uint32_t w, std::uint32_t h, std::uint32_t& out_x, std::uint32_t& out_y) {
+        if (pen_x + w > atlas_w) {
+            pen_y += shelf_h + 1;
+            pen_x   = 0;
+            shelf_h = 0;
+        }
+        if (pen_y + h > atlas_h) return false;
+        out_x = pen_x;
+        out_y = pen_y;
+        pen_x += w + 1;
+        if (h > shelf_h) shelf_h = h;
+        return true;
+    }
+
+    FT_Face ResolveFallbackFace(std::uint32_t codepoint) {
+        if (auto it = fallback_by_codepoint.find(codepoint); it != fallback_by_codepoint.end()) {
+            if (LoadRenderableGlyph(it->second, codepoint)) return it->second;
+            fallback_by_codepoint.erase(it);
+        }
+        if (fallback_misses.count(codepoint) != 0) return nullptr;
+
+        for (const auto& candidate : ResolveFontconfigCodepoint(codepoint)) {
+            const auto path     = candidate.path.string();
+            const auto key      = path + '\0' + std::to_string(candidate.face_index);
+            auto [it, inserted] = fallback_faces.try_emplace(key);
+            if (inserted) {
+                auto [blob_it, new_blob] = fallback_blobs.try_emplace(path);
+                if (new_blob) blob_it->second = ReadAll(candidate.path);
+                auto bytes = blob_it->second;
+                if (! bytes) continue;
+                auto       fallback = std::make_unique<FallbackFace>();
+                FT_Library lib      = FtLibrary::Get().handle();
+                if (lib == nullptr ||
+                    FT_New_Memory_Face(lib,
+                                       reinterpret_cast<const FT_Byte*>(bytes->data()),
+                                       static_cast<FT_Long>(bytes->size()),
+                                       candidate.face_index,
+                                       &fallback->face) != 0 ||
+                    IsLastResortFace(fallback->face) ||
+                    ! SetFontPixelSize(fallback->face, raster_pixel_size))
+                    continue;
+                fallback->blob = std::move(bytes);
+                it->second     = std::move(fallback);
+            }
+            if (! it->second || ! LoadRenderableGlyph(it->second->face, codepoint)) continue;
+            fallback_by_codepoint.emplace(codepoint, it->second->face);
+            return it->second->face;
+        }
+        fallback_misses.insert(codepoint);
+        return nullptr;
+    }
+
+    void Blit(std::uint32_t x, std::uint32_t y, const FT_Bitmap& bitmap) {
+        for (std::uint32_t row = 0; row < bitmap.rows; ++row) {
+            const auto* src = bitmap.buffer + static_cast<std::ptrdiff_t>(row) * bitmap.pitch;
+            auto*       dst = &atlas[(y + row) * atlas_w + x];
+            if (bitmap.pixel_mode == FT_PIXEL_MODE_GRAY && bitmap.num_grays == 256) {
+                std::memcpy(dst, src, bitmap.width);
+                continue;
+            }
+            for (std::uint32_t col = 0; col < bitmap.width; ++col) {
+                switch (bitmap.pixel_mode) {
+                case FT_PIXEL_MODE_GRAY:
+                    dst[col] = static_cast<std::uint8_t>(static_cast<unsigned>(src[col]) * 255u /
+                                                         (bitmap.num_grays - 1u));
+                    break;
+                case FT_PIXEL_MODE_MONO:
+                    dst[col] = (src[col / 8] & (0x80u >> (col % 8))) ? 255 : 0;
+                    break;
+                case FT_PIXEL_MODE_GRAY2:
+                    dst[col] = static_cast<std::uint8_t>(
+                        ((src[col / 4] >> (6u - (col % 4) * 2u)) & 3u) * 85u);
+                    break;
+                case FT_PIXEL_MODE_GRAY4:
+                    dst[col] = static_cast<std::uint8_t>(
+                        ((src[col / 2] >> (4u - (col % 2) * 4u)) & 15u) * 17u);
+                    break;
+                case FT_PIXEL_MODE_BGRA: dst[col] = src[col * 4 + 3]; break;
+                default: dst[col] = 0; break;
+                }
+            }
+        }
+    }
+};
+
+FontFace::FontFace(): m_impl(std::make_unique<Impl>()) {}
+FontFace::~FontFace()                              = default;
+FontFace::FontFace(FontFace&&) noexcept            = default;
+FontFace& FontFace::operator=(FontFace&&) noexcept = default;
+
+FontMetrics FontFace::Metrics() const {
+    FontMetrics m {};
+    if (m_impl->face != nullptr && m_impl->face->size != nullptr) {
+        const auto& sm = m_impl->face->size->metrics;
+        const float scale = FontLayoutScale(m_impl->face, m_impl->raster_pixel_size) / 64.0f;
+        m.ascender        = static_cast<float>(sm.ascender) * scale;
+        m.descender       = static_cast<float>(sm.descender) * scale;
+        m.line_height     = static_cast<float>(sm.height) * scale;
+        m.pixel_size   = m_impl->pixel_size;
+    }
+    m.atlas_w = m_impl->atlas_w;
+    m.atlas_h = m_impl->atlas_h;
+    return m;
+}
+
+std::span<const std::uint8_t> FontFace::AtlasPixels() const {
+    return std::span<const std::uint8_t>(m_impl->atlas);
+}
+
+std::span<const AtlasDirtyRect> FontFace::DirtyRects() const noexcept {
+    return m_impl->dirty_rects;
+}
+void               FontFace::ClearDirtyRects() noexcept { m_impl->dirty_rects.clear(); }
+const std::string& FontFace::AtlasUrl() const noexcept { return m_impl->atlas_url; }
+
+const GlyphInfo* FontFace::Lookup(std::uint32_t codepoint) const noexcept {
+    auto& impl = *m_impl;
+    if (auto it = impl.glyphs.find(codepoint); it != impl.glyphs.end()) {
+        return &it->second;
+    }
+    return nullptr;
+}
+
+void FontFace::Populate(std::span<const std::uint32_t> codepoints) {
+    auto& impl = *m_impl;
+    if (impl.face == nullptr) return;
+    for (std::uint32_t codepoint : codepoints) {
+        if (impl.glyphs.find(codepoint) != impl.glyphs.end()) continue;
+
+        // WE ignores horizontal tabs completely. FreeType otherwise resolves
+        // the control code through glyph 0 and produces a visible tofu box or
+        // an unintended advance, depending on the selected font.
+        if (codepoint == '\t') {
+            impl.glyphs.emplace(codepoint, GlyphInfo {});
+            continue;
+        }
+
+        FT_Face render_face = impl.face;
+        if (! LoadRenderableGlyph(render_face, codepoint)) {
+            render_face =
+                IsLayoutWhitespace(codepoint) ? nullptr : impl.ResolveFallbackFace(codepoint);
+        }
+        if (render_face == nullptr) {
+            // No renderable glyph (whitespace the primary face lacks, or a
+            // codepoint no fallback face covers). Reserve the primary face's
+            // .notdef (glyph 0) advance so the codepoint still occupies layout
+            // width — matching the pre-fallback port behavior — but never
+            // rasterize a tofu box for it.
+            GlyphInfo gi {};
+            if (FT_Load_Glyph(impl.face, 0, FT_LOAD_DEFAULT) == 0) {
+                gi.advance_x = static_cast<float>(impl.face->glyph->advance.x) *
+                               FontLayoutScale(impl.face, impl.raster_pixel_size) / 64.0f;
+            }
+            impl.glyphs.emplace(codepoint, gi);
+            continue;
+        }
+
+        FT_GlyphSlot g = render_face->glyph;
+        GlyphInfo    gi {};
+        gi.pixel_w   = g->bitmap.width;
+        gi.pixel_h   = g->bitmap.rows;
+        const float kInvRasterScale = FontLayoutScale(render_face, impl.raster_pixel_size);
+        gi.layout_w  = static_cast<float>(gi.pixel_w) * kInvRasterScale;
+        gi.layout_h  = static_cast<float>(gi.pixel_h) * kInvRasterScale;
+        gi.bearing_x = static_cast<float>(g->bitmap_left) * kInvRasterScale;
+        gi.bearing_y = static_cast<float>(g->bitmap_top) * kInvRasterScale;
+        gi.advance_x =
+            static_cast<float>(g->advance.x) * (kInvRasterScale / 64.0f);
+
+        if (gi.pixel_w == 0 || gi.pixel_h == 0) {
+            gi.atlas_x = 0;
+            gi.atlas_y = 0;
+            impl.glyphs.emplace(codepoint, gi);
+            continue;
+        }
+
+        if (! impl.ReserveSlot(gi.pixel_w, gi.pixel_h, gi.atlas_x, gi.atlas_y)) {
+            gi.atlas_x = 0;
+            gi.atlas_y = 0;
+            gi.pixel_w = 0;
+            gi.pixel_h = 0;
+            impl.glyphs.emplace(codepoint, gi);
+            continue;
+        }
+
+        impl.Blit(gi.atlas_x, gi.atlas_y, g->bitmap);
+        impl.dirty_rects.push_back({ gi.atlas_x, gi.atlas_y, gi.pixel_w, gi.pixel_h });
+        impl.glyphs.emplace(codepoint, gi);
+    }
+}
+
+// -- FontCache ------------------------------------------------------------
+
+struct FontCache::Impl {
+    struct Key {
+        std::uint64_t blob_hash;
+        std::uint32_t pixel_size;
+        std::int32_t  face_index;
+        bool          operator==(const Key& o) const noexcept {
+            return blob_hash == o.blob_hash && pixel_size == o.pixel_size &&
+                   face_index == o.face_index;
+        }
+    };
+    struct KeyHash {
+        std::size_t operator()(const Key& k) const noexcept {
+            return std::hash<std::uint64_t> {}(k.blob_hash) ^
+                   (std::hash<std::uint32_t> {}(k.pixel_size) << 1) ^
+                   (std::hash<std::int32_t> {}(k.face_index) << 2);
+        }
+    };
+    std::unordered_map<Key, std::unique_ptr<FontFace>, KeyHash> faces;
+    std::vector<FontFace*>                                      face_views;
+};
+
+FontCache::FontCache(): m_impl(std::make_unique<Impl>()) {}
+FontCache::~FontCache() = default;
+
+FontFace* FontCache::GetFace(std::shared_ptr<std::vector<std::byte>> blob, std::uint32_t pixel_size,
+                             std::int32_t face_index) {
+    if (! blob || blob->empty() || pixel_size == 0 || face_index < 0) return nullptr;
+
+    auto      blob_span = std::span<const std::byte>(blob->data(), blob->size());
+    auto      blob_hash = HashBlob(blob_span);
+    Impl::Key key { blob_hash, pixel_size, face_index };
+    if (auto it = m_impl->faces.find(key); it != m_impl->faces.end()) {
+        return it->second.get();
+    }
+
+    FT_Library lib = FtLibrary::Get().handle();
+    if (lib == nullptr) return nullptr;
+
+    auto face = std::make_unique<FontFace>();
+    if (FT_New_Memory_Face(lib,
+                           reinterpret_cast<const FT_Byte*>(blob_span.data()),
+                           static_cast<FT_Long>(blob_span.size()),
+                           face_index,
+                           &face->m_impl->face) != 0) {
+        rstd_error("FT_New_Memory_Face failed");
+        return nullptr;
+    }
+    if (IsLastResortFace(face->m_impl->face)) return nullptr;
+    const std::uint32_t raster_pixel_size = pixel_size * kGlyphRasterScale;
+    if (! SetFontPixelSize(face->m_impl->face, raster_pixel_size)) {
+        rstd_error("FT_Set_Pixel_Sizes failed (px={})", pixel_size);
+        return nullptr;
+    }
+    // Keep the bytes alive for the face's lifetime: FT_Face holds raw
+    // pointers into this buffer and dereferences them on every glyph load.
+    face->m_impl->blob              = std::move(blob);
+    face->m_impl->pixel_size        = pixel_size;
+    face->m_impl->raster_pixel_size = raster_pixel_size;
+    face->m_impl->ResetAtlas(AtlasDimForPixelSize(raster_pixel_size));
+    face->m_impl->atlas_url = "_text_atlas_" + std::to_string(blob_hash) + "_" +
+                              std::to_string(pixel_size) + "_" + std::to_string(face_index);
+
+    auto* raw          = face.get();
+    m_impl->faces[key] = std::move(face);
+    m_impl->face_views.push_back(raw);
+    return raw;
+}
+
+std::span<FontFace* const> FontCache::Faces() const { return m_impl->face_views; }
+
+void FontCache::TrimUnusedFaces(std::span<const std::string>                 material_textures,
+                                const std::function<void(std::string_view)>& before_remove) {
+    const std::unordered_set<std::string> retained(material_textures.begin(),
+                                                   material_textures.end());
+    for (auto it = m_impl->faces.begin(); it != m_impl->faces.end();) {
+        auto& face = *it->second;
+        if (*face.m_impl->layout_users == 0 && ! retained.contains(face.AtlasUrl())) {
+            before_remove(face.AtlasUrl());
+            auto& views = m_impl->face_views;
+            views.erase(std::remove(views.begin(), views.end(), &face), views.end());
+            it = m_impl->faces.erase(it);
+        } else
+            ++it;
+    }
+}
+
+FontCache& EnsureSceneFontCache(sr::Scene& scene) {
+    if (! scene.font_cache) {
+        scene.font_cache = { new FontCache(), [](void* p) noexcept {
+                                delete static_cast<FontCache*>(p);
+                            } };
+    }
+    return *static_cast<FontCache*>(scene.font_cache.get());
+}
+FontCache* SceneFontCache(sr::Scene& scene) noexcept {
+    return static_cast<FontCache*>(scene.font_cache.get());
+}
+
+// WE references system fonts as `systemfont_<lowercased-windows-name>`,
+// e.g. `systemfont_arial`. Fontconfig has an alias table that maps Windows
+// family names (Arial, Courier New, ...) to whatever the user actually has
+// installed. Strip the prefix and ask fc.
+static std::vector<FontCandidate> ResolveViaFontconfig(std::string_view name) {
+    constexpr std::string_view kPrefix = "systemfont_";
+    // Match on the basename — scenes occasionally prefix a dir.
+    std::string base = std::filesystem::path(name).filename().native();
+    if (base.size() <= kPrefix.size() ||
+        std::string_view(base).substr(0, kPrefix.size()) != kPrefix) {
+        return {};
+    }
+    std::string family = base.substr(kPrefix.size());
+    if (family.empty()) return {};
+    family[0] = static_cast<char>(std::toupper(static_cast<unsigned char>(family[0])));
+
+    if (! FcInit()) return {};
+    FcPattern* pat = FcNameParse(reinterpret_cast<const FcChar8*>(family.c_str()));
+    if (pat == nullptr) return {};
+    auto candidates = FontconfigCandidates(pat);
+    FcPatternDestroy(pat);
+    return candidates;
+}
+
+FontCache::ResolvedBlob FontCache::ResolveSystemFont(std::string_view name, bool fallback_to_any) {
+    namespace fs = std::filesystem;
+
+    auto try_load = [](const fs::path& p, std::int32_t face_index = 0) -> ResolvedBlob {
+        if (! fs::exists(p) || ! fs::is_regular_file(p)) return { nullptr, {} };
+        auto bytes = ReadAll(p);
+        if (! bytes) return { nullptr, {} };
+        auto    lib  = FtLibrary::Get().handle();
+        FT_Face face = nullptr;
+        if (lib == nullptr || FT_New_Memory_Face(lib,
+                                                 reinterpret_cast<const FT_Byte*>(bytes->data()),
+                                                 static_cast<FT_Long>(bytes->size()),
+                                                 face_index,
+                                                 &face) != 0)
+            return { nullptr, {} };
+        const bool usable = ! IsLastResortFace(face);
+        FT_Done_Face(face);
+        if (! usable) return { nullptr, {} };
+        return { std::move(bytes), p.string(), face_index };
+    };
+
+    if (! name.empty()) {
+        // Direct path?
+        if (auto rb = try_load(fs::path(name)); rb.bytes) return rb;
+        // WE's systemfont_<family> alias → fontconfig.
+        for (const auto& candidate : ResolveViaFontconfig(name)) {
+            if (auto rb = try_load(candidate.path, candidate.face_index); rb.bytes) return rb;
+        }
+        // Bare filename: search common roots.
+        // macOS system font directories. /Library/Fonts is user-installed,
+        // /System/Library/Fonts is the OS font set.
+        std::vector<fs::path> roots {
+            "/System/Library/Fonts",
+            "/System/Library/Fonts/Supplemental",
+            "/Library/Fonts",
+        };
+        if (auto* home = std::getenv("HOME"); home != nullptr) {
+            roots.emplace_back(fs::path(home) / "Library/Fonts");
+        }
+        std::string           base    = fs::path(name).filename().string();
+        std::size_t           scanned = 0;
+        constexpr std::size_t kCap    = 8192;
+        for (const auto& root : roots) {
+            if (! fs::exists(root)) continue;
+            std::error_code ec;
+            for (auto it = fs::recursive_directory_iterator(
+                     root, fs::directory_options::skip_permission_denied, ec);
+                 it != fs::recursive_directory_iterator();
+                 it.increment(ec)) {
+                if (ec) {
+                    ec.clear();
+                    continue;
+                }
+                if (++scanned > kCap) break;
+                if (! it->is_regular_file(ec)) continue;
+                if (it->path().filename() == base) {
+                    if (auto rb = try_load(it->path()); rb.bytes) return rb;
+                }
+            }
+            if (scanned > kCap) break;
+        }
+    }
+
+    if (! fallback_to_any) return { nullptr, {} };
+
+    for (const auto& candidate : ResolveViaFontconfig("systemfont_sans-serif")) {
+        if (auto rb = try_load(candidate.path, candidate.face_index); rb.bytes) return rb;
+    }
+
+    // Last-resort fallback: any .ttf/.otf in the system roots.
+    std::vector<fs::path> roots {
+        "/System/Library/Fonts",
+        "/System/Library/Fonts/Supplemental",
+        "/Library/Fonts",
+    };
+    if (auto* home = std::getenv("HOME"); home != nullptr) {
+        roots.emplace_back(fs::path(home) / "Library/Fonts");
+    }
+    std::size_t           scanned = 0;
+    constexpr std::size_t kCap    = 4096;
+    for (const auto& root : roots) {
+        if (! fs::exists(root)) continue;
+        std::error_code ec;
+        for (auto it = fs::recursive_directory_iterator(
+                 root, fs::directory_options::skip_permission_denied, ec);
+             it != fs::recursive_directory_iterator();
+             it.increment(ec)) {
+            if (ec) {
+                ec.clear();
+                continue;
+            }
+            if (++scanned > kCap) break;
+            if (! it->is_regular_file(ec)) continue;
+            if (IsFontExt(it->path())) {
+                if (auto rb = try_load(it->path()); rb.bytes) return rb;
+            }
+        }
+        if (scanned > kCap) break;
+    }
+    return { nullptr, {} };
+}
+
+FontCache::ResolvedBlob FontCache::ResolveFont(sr::fs::VFS& vfs, std::string_view name,
+                                               bool fallback_to_any) {
+    if (name.empty()) return ResolveSystemFont(name, fallback_to_any);
+
+    auto load_vfs = [&vfs](std::string_view path) -> ResolvedBlob {
+        if (! vfs.Contains(path)) return { nullptr, {} };
+        auto stream = vfs.Open(path);
+        if (! stream || stream->Size() <= 0) return { nullptr, {} };
+        auto blob = std::make_shared<std::vector<std::byte>>(stream->Usize());
+        if (stream->Read(blob->data(), blob->size()) != blob->size()) return { nullptr, {} };
+        return { std::move(blob), std::string(path) };
+    };
+
+    std::string normalized_name { name };
+    std::replace(normalized_name.begin(), normalized_name.end(), '\\', '/');
+    std::string_view normalized_relative = normalized_name;
+    if (normalized_relative.starts_with("/assets/"))
+        normalized_relative.remove_prefix(8);
+    else if (normalized_relative.starts_with("assets/"))
+        normalized_relative.remove_prefix(7);
+    while (normalized_relative.starts_with('/')) normalized_relative.remove_prefix(1);
+
+    const std::string basename = std::filesystem::path(normalized_relative).filename().native();
+    if (basename.starts_with("systemfont_"))
+        return ResolveSystemFont(name, fallback_to_any);
+
+    std::string exact = name.starts_with('/') ? std::string(name) : "/assets/" + std::string(name);
+    if (auto resolved = load_vfs(exact); resolved.bytes) return resolved;
+
+    const std::string normalized = sr::fs::ResolveAssetPath(normalized_relative);
+    if (normalized != exact) {
+        if (auto resolved = load_vfs(normalized); resolved.bytes) return resolved;
+    }
+
+    if (! basename.empty()) {
+        auto unique = vfs.FindUniqueByBasenameInTopMount("/assets", basename);
+        if (unique) {
+            if (auto resolved = load_vfs(*unique); resolved.bytes) return resolved;
+        }
+    }
+
+    return ResolveSystemFont(name, fallback_to_any);
+}
+
+// -- Atlas snapshot -------------------------------------------------------
+
+std::shared_ptr<sr::Image> BuildAtlasImage(const FontFace& face, const std::string& key) {
+    auto fm  = face.Metrics();
+    auto pix = face.AtlasPixels();
+    if (fm.atlas_w == 0 || fm.atlas_h == 0 || pix.empty()) return nullptr;
+
+    auto img = std::make_shared<sr::Image>();
+    img->key = key;
+
+    img->header.width         = static_cast<sr::i32>(fm.atlas_w);
+    img->header.height        = static_cast<sr::i32>(fm.atlas_h);
+    img->header.mapWidth      = img->header.width;
+    img->header.mapHeight     = img->header.height;
+    img->header.mipmap_larger = false;
+    img->header.mipmap_pow2   = false;
+    img->header.type          = sr::ImageType::UNKNOWN;
+    img->header.format        = sr::TextureFormat::R8;
+    img->header.count         = 1;
+    img->header.isSprite      = false;
+    img->header.sample        = { sr::TextureWrap::CLAMP_TO_EDGE,
+                                  sr::TextureWrap::CLAMP_TO_EDGE,
+                                  sr::TextureFilter::LINEAR,
+                                  sr::TextureFilter::LINEAR };
+
+    img->slots.resize(1);
+    auto& slot  = img->slots[0];
+    slot.width  = img->header.width;
+    slot.height = img->header.height;
+    slot.mipmaps.resize(1);
+    auto& mip  = slot.mipmaps[0];
+    mip.width  = img->header.width;
+    mip.height = img->header.height;
+    mip.size   = static_cast<sr::isize>(pix.size());
+
+    // Alias the face's live CPU atlas (no memcpy). The renderer's first
+    // CreateTex call samples whatever pixels are present at that moment, so
+    // glyphs the actuator Populated between parse-time and the first draw
+    // are picked up. The face is scene-owned and outlives the Image.
+    mip.data = sr::ImageDataPtr(const_cast<std::uint8_t*>(pix.data()), [](std::uint8_t*) noexcept {
+    });
+
+    return img;
+}
+
+// -- Text shader ----------------------------------------------------------
+
+namespace
+{
+
+constexpr const char* kTextShaderHlsl = R"hlsl(
+[[vk::binding(0, 0)]] cbuffer ww_Uniforms {
+    column_major float4x4 g_ModelViewProjectionMatrix;
+    float g_Alpha;
+};
+
+struct VSInput {
+    float3 a_Position : a_Position;
+    float2 a_TexCoord : a_TexCoord;
+    float4 a_Color    : a_Color;
+};
+struct PSInput {
+    float4 sv_pos : SV_Position;
+    float2 v_uv   : TEXCOORD0;
+    float4 v_col  : COLOR0;
+};
+
+PSInput main_vs(VSInput i) {
+    PSInput o;
+    o.sv_pos = mul(g_ModelViewProjectionMatrix, float4(i.a_Position, 1.0));
+    o.v_uv   = i.a_TexCoord;
+    o.v_col  = i.a_Color;
+    return o;
+}
+
+[[vk::combinedImageSampler]][[vk::binding(1, 0)]]
+Texture2D<float4> g_Texture0;
+[[vk::combinedImageSampler]][[vk::binding(1, 0)]]
+SamplerState g_Texture0_sampler;
+
+float4 main_ps(PSInput i) : SV_Target {
+    float a = g_Texture0.Sample(g_Texture0_sampler, i.v_uv).r;
+    return float4(i.v_col.rgb, i.v_col.a * a * g_Alpha);
+}
+)hlsl";
+
+constexpr const char* kTextCopyBackgroundShaderHlsl = R"hlsl(
+[[vk::binding(0, 0)]] cbuffer ww_Uniforms {
+    column_major float4x4 g_ModelViewProjectionMatrix;
+    column_major float4x4 g_EffectModelViewProjectionMatrix;
+};
+
+struct VSInput {
+    float3 a_Position : a_Position;
+    float2 a_TexCoord : a_TexCoord;
+};
+struct PSInput {
+    float4 sv_pos : SV_Position;
+    float4 v_proj : TEXCOORD0;
+};
+
+PSInput main_vs(VSInput i) {
+    float4 pos = float4(i.a_Position, 1.0);
+    PSInput o;
+    o.sv_pos = mul(g_ModelViewProjectionMatrix, pos);
+    o.v_proj = mul(g_EffectModelViewProjectionMatrix, pos);
+    return o;
+}
+
+[[vk::combinedImageSampler]][[vk::binding(1, 0)]]
+Texture2D<float4> g_Texture0;
+[[vk::combinedImageSampler]][[vk::binding(1, 0)]]
+SamplerState g_Texture0_sampler;
+
+float4 main_ps(PSInput i) : SV_Target {
+    float2 uv = (i.v_proj.xy / i.v_proj.w) * 0.5 + 0.5;
+    return float4(g_Texture0.Sample(g_Texture0_sampler, uv).rgb, 0.0);
+}
+)hlsl";
+
+std::shared_ptr<sr::SceneShader> CompileInlineShader(std::string_view name,
+                                                      std::string_view source) {
+    using namespace sr::vulkan;
+    std::string src(source);
+
+    std::array<ShaderCompUnit, 2> units {
+        ShaderCompUnit { sr::ShaderType::VERTEX, src, "main_vs", SourceLang::Hlsl },
+        ShaderCompUnit { sr::ShaderType::FRAGMENT, src, "main_ps", SourceLang::Hlsl },
+    };
+    ShaderCompOpt opt {};
+    opt.target   = VulkanTarget::Vulkan_1_1;
+    opt.optimize = false;
+
+    std::vector<Uni_ShaderSpv> spvs;
+    if (! CompileAndLinkShaderUnits(units, opt, spvs)) {
+        rstd_error("{} shader compile failed", name);
+        return nullptr;
+    }
+
+    auto shader  = std::make_shared<sr::SceneShader>();
+    shader->id   = 0;
+    shader->name = std::string(name);
+    shader->codes.reserve(spvs.size());
+    for (auto& spv : spvs) {
+        shader->codes.emplace_back(std::move(spv->spirv));
+    }
+    return shader;
+}
+
+} // namespace
+
+std::shared_ptr<sr::SceneShader> GetTextSceneShader() {
+    static std::once_flag                    once;
+    static std::shared_ptr<sr::SceneShader> shader;
+    std::call_once(once, [] {
+        shader = CompileInlineShader("text", kTextShaderHlsl);
+    });
+    return shader;
+}
+
+std::shared_ptr<sr::SceneShader> GetTextCopyBackgroundSceneShader() {
+    static std::once_flag                    once;
+    static std::shared_ptr<sr::SceneShader> shader;
+    std::call_once(once, [] {
+        shader = CompileInlineShader("text_copybackground", kTextCopyBackgroundShaderHlsl);
+    });
+    return shader;
+}
+
+// -- TextLayouter ---------------------------------------------------------
+
+namespace
+{
+
+struct TextLineRunGI {
+    std::vector<const GlyphInfo*> glyphs;
+    float                         width { 0.0f };
+};
+
+bool ContainsSubstring(std::string_view s, std::string_view what) noexcept {
+    return s.find(what) != std::string::npos;
+}
+
+constexpr std::uint32_t kEllipsisCodepoint { 0x2026 };
+
+bool IsBreakableSpace(std::uint32_t cp) noexcept {
+    return cp == 0x0020 || cp == 0x0009 || cp == 0x00A0 || (cp >= 0x2000 && cp <= 0x200A) ||
+           cp == 0x205F || cp == 0x3000;
+}
+
+bool AllowsBreakBefore(std::uint32_t cp) noexcept {
+    if (cp >= 0x1100 && cp <= 0x11FF) return true;
+    if (cp >= 0x2E80 && cp <= 0xA4CF) return true;
+    if (cp >= 0xAC00 && cp <= 0xD7AF) return true;
+    if (cp >= 0xF900 && cp <= 0xFAFF) return true;
+    if (cp >= 0xFF00 && cp <= 0xFF60) return true;
+    if (cp >= 0x20000 && cp <= 0x3FFFD) return true;
+    return false;
+}
+
+} // namespace
+
+std::array<float, 2> ResolveTextAnchorPosition(std::string_view horizontal,
+                                               std::string_view vertical,
+                                               float            origin_x,
+                                               float            origin_y,
+                                               float            frame_width,
+                                               float            frame_height,
+                                               float            scale_x,
+                                               float            scale_y,
+                                               float            line_box_width,
+                                               float            line_box_height) {
+    float       x       = origin_x;
+    float       y       = origin_y;
+    const float inset_x = (frame_width - line_box_width) * scale_x * 0.5f;
+    const float inset_y = (frame_height - line_box_height) * scale_y * 0.5f;
+    if (ContainsSubstring(horizontal, "left")) x += frame_width * scale_x * 0.5f - inset_x;
+    if (ContainsSubstring(horizontal, "right")) x -= frame_width * scale_x * 0.5f - inset_x;
+    if (ContainsSubstring(vertical, "top")) y -= frame_height * scale_y * 0.5f - inset_y;
+    if (ContainsSubstring(vertical, "bottom")) y += frame_height * scale_y * 0.5f - inset_y;
+    return { x, y };
+}
+
+struct TextLayouter::Impl {
+    FontFace*                       face { nullptr };
+    std::shared_ptr<std::size_t>    face_users;
+    std::shared_ptr<sr::SceneMesh> mesh;
+    TextLayoutStyle                 style;
+    std::size_t                     peak_quads { 0 };
+    FontMetrics                     metrics;
+
+    float       last_text_w { 0.0f };
+    float       last_text_h { 0.0f };
+    float       last_source_w { 0.0f };
+    float       last_source_h { 0.0f };
+    float       last_source_center_x { 0.0f };
+    float       last_source_center_y { 0.0f };
+    std::string current_text;
+    bool        layout_dirty { true };
+    bool        missing_glyph_logged { false };
+    bool        truncate_logged { false };
+    float       layout_scale { 1.0f };
+
+    // Scratch buffers reused across SetText calls — avoids reallocs for
+    // every script tick. Sized at construction to peak capacity.
+    std::vector<float>         positions;
+    std::vector<float>         texcoords;
+    std::vector<float>         colors;
+
+    Impl(FontFace* f, std::shared_ptr<sr::SceneMesh> m, TextLayoutStyle s, std::size_t pq)
+        : face(f),
+          mesh(std::move(m)),
+          style(std::move(s)),
+          peak_quads(pq),
+          metrics(face->Metrics()) {
+        positions.assign(pq * 4 * 3, 0.0f);
+        texcoords.assign(pq * 4 * 2, 0.0f);
+        colors.assign(pq * 4 * 4, 0.0f);
+        std::vector<std::uint32_t> indices(pq * 6);
+        for (std::size_t q = 0; q < pq; ++q) {
+            const auto                         base = static_cast<std::uint32_t>(q * 4);
+            const std::array<std::uint32_t, 6> quad { base, base + 1, base + 2,
+                                                      base, base + 2, base + 3 };
+            std::copy(quad.begin(), quad.end(), indices.begin() + q * 6);
+        }
+        auto& index = mesh->GetIndexArray(0);
+        index.Assign(0, indices);
+        index.SetStaticTopology();
+        index.SetRenderDataCount(0);
+        SeedEllipsis();
+    }
+
+    void SeedEllipsis() {
+        if (! style.use_ellipsis || face == nullptr) return;
+        const std::uint32_t cp[1] { kEllipsisCodepoint };
+        face->Populate(std::span<const std::uint32_t>(cp, 1));
+    }
+};
+
+TextLayouter::TextLayouter(FontFace* face, std::shared_ptr<sr::SceneMesh> mesh,
+                           TextLayoutStyle style, std::size_t peak_quads)
+    : m_impl(std::make_unique<Impl>(face, std::move(mesh), std::move(style), peak_quads)) {
+    m_impl->face_users = face->m_impl->layout_users;
+    ++*m_impl->face_users;
+}
+
+TextLayouter::~TextLayouter() {
+    // Scene member destruction may release the FontCache before script closures
+    // destroy their layouters. Keep a shared counter independent of face lifetime.
+    --*m_impl->face_users;
+}
+
+float             TextLayouter::TextWidth() const noexcept { return m_impl->last_text_w; }
+float             TextLayouter::TextHeight() const noexcept { return m_impl->last_text_h; }
+float             TextLayouter::SourceWidth() const noexcept { return m_impl->last_source_w; }
+float             TextLayouter::SourceHeight() const noexcept { return m_impl->last_source_h; }
+FontFace*         TextLayouter::Face() const noexcept { return m_impl->face; }
+TextLayoutMetrics TextLayouter::Metrics() const noexcept {
+    return {
+        .text_width      = m_impl->last_text_w,
+        .text_height     = m_impl->last_text_h,
+        .source_width    = m_impl->last_source_w,
+        .source_height   = m_impl->last_source_h,
+        .source_center_x = m_impl->last_source_center_x,
+        .source_center_y = m_impl->last_source_center_y,
+        .padding         = m_impl->style.padding,
+        .source_centered = m_impl->style.center_source,
+    };
+}
+
+void TextLayouter::SetFace(FontFace* face) {
+    auto& im = *m_impl;
+    if (face == nullptr || face == im.face) return;
+    --*im.face_users;
+    im.face_users = face->m_impl->layout_users;
+    ++*im.face_users;
+    im.face                 = face;
+    im.layout_dirty         = true;
+    im.metrics              = face->Metrics();
+    im.missing_glyph_logged = false;
+    im.truncate_logged      = false;
+    im.SeedEllipsis();
+    SetText(im.current_text);
+}
+
+void TextLayouter::SetLayoutScale(float scale) {
+    auto& im = *m_impl;
+    if (! std::isfinite(scale) || scale <= 0.0f) return;
+    if (im.layout_scale == scale) return;
+    im.layout_scale = scale;
+    im.layout_dirty = true;
+    SetText(im.current_text);
+}
+
+void TextLayouter::SetColor(float r, float g, float b) {
+    auto& im = *m_impl;
+    if (im.style.color[0] == r && im.style.color[1] == g && im.style.color[2] == b) return;
+    im.style.color = { r, g, b };
+    im.layout_dirty = true;
+    // Re-run the layout so every glyph quad picks up the new vertex color.
+    SetText(im.current_text);
+}
+
+void TextLayouter::SetAlpha(float alpha) {
+    auto& im = *m_impl;
+    if (im.style.alpha == alpha) return;
+    im.style.alpha = alpha;
+    im.layout_dirty = true;
+    SetText(im.current_text);
+}
+
+void TextLayouter::SetMaxWidth(float max_width) {
+    auto& im = *m_impl;
+    if (! std::isfinite(max_width) || max_width < 0.0f) return;
+    if (im.style.max_width == max_width) return;
+    im.style.max_width  = max_width;
+    im.layout_dirty      = true;
+    im.style.limit_width = max_width > 0.0f;
+    im.truncate_logged   = false;
+    SetText(im.current_text);
+}
+
+TextGeometry ResolveTextGeometry(const TextGeometryPolicy& policy,
+                                 const TextLayoutMetrics&  metrics) {
+    auto positive = [](float value, float fallback) {
+        return value > 0.0f ? value : fallback;
+    };
+    const float frame_w = positive(policy.frame_width, 1.0f);
+    const float frame_h = positive(policy.frame_height, 1.0f);
+    const float text_w  = positive(metrics.text_width, 1.0f);
+    const float text_h  = positive(metrics.text_height, 1.0f);
+    const float src_w   = positive(metrics.source_width, text_w);
+    const float src_h   = positive(metrics.source_height, text_h);
+    const float pad     = std::max(0.0f, metrics.padding);
+    const float src_cx  = std::isfinite(metrics.source_center_x) ? metrics.source_center_x : 0.0f;
+    const float src_cy  = std::isfinite(metrics.source_center_y) ? metrics.source_center_y : 0.0f;
+
+    const float text_bbox_w = text_w + 2.0f * pad;
+    const float text_bbox_h = text_h + 2.0f * pad;
+    // A source that retains its font-baseline coordinates may be asymmetric
+    // around the layer origin. Its RT must cover both sides without moving the
+    // glyphs; a tightly centred source only needs its ink dimensions.
+    const float src_bbox_w =
+        metrics.source_centered ? src_w + 2.0f * pad
+                                : 2.0f * (std::abs(src_cx) + src_w * 0.5f + pad);
+    const float src_bbox_h =
+        metrics.source_centered ? src_h + 2.0f * pad
+                                : 2.0f * (std::abs(src_cy) + src_h * 0.5f + pad);
+
+    const float dynamic_w      = std::max({ src_bbox_w, text_bbox_w, frame_w * 3.0f, 1024.0f });
+    const float dynamic_h      = std::max({ src_bbox_h, text_bbox_h, frame_h * 2.0f, 256.0f });
+    const bool  dynamic_effect = policy.dynamic && policy.has_effect;
+
+    const float rt_max_w = policy.dynamic ? (! policy.has_effect ? dynamic_w : frame_w)
+                                          : (policy.has_effect ? frame_w : src_bbox_w);
+    const float rt_max_h = policy.dynamic ? (! policy.has_effect ? dynamic_h : frame_h)
+                                          : (policy.has_effect ? frame_h : src_bbox_h);
+
+    TextGeometry out;
+    out.rt_width            = std::max({ src_bbox_w, text_bbox_w, rt_max_w });
+    out.rt_height           = std::max({ src_bbox_h, text_bbox_h, rt_max_h });
+    out.effect_frame_width  = frame_w;
+    out.effect_frame_height = frame_h;
+
+    if (! policy.has_effect) {
+        const bool tight_bbox = ! policy.preserve_text_bbox;
+        out.draw_width        = tight_bbox ? src_w : text_bbox_w;
+        out.draw_height       = tight_bbox ? src_h : text_bbox_h;
+        out.draw_offset_x     = tight_bbox ? src_cx : 0.0f;
+        out.draw_offset_y     = tight_bbox ? src_cy : 0.0f;
+        out.uv_source_width   = tight_bbox ? src_w : text_bbox_w;
+        out.uv_source_height  = tight_bbox ? src_h : text_bbox_h;
+        return out;
+    }
+
+    if (dynamic_effect) {
+        out.draw_width          = std::max(frame_w, src_bbox_w);
+        out.draw_height         = frame_h;
+        out.uv_source_width     = out.draw_width;
+        out.uv_source_height    = std::max(frame_h, src_bbox_h);
+        out.effect_frame_width  = out.uv_source_width;
+        out.effect_frame_height = out.uv_source_height;
+        return out;
+    }
+
+    out.draw_width       = frame_w;
+    out.draw_height      = frame_h;
+    out.uv_source_width  = frame_w;
+    out.uv_source_height = frame_h;
+    return out;
+}
+
+void TextLayouter::SetText(std::string_view utf8) {
+    auto& im = *m_impl;
+
+    if (! im.layout_dirty && im.current_text == utf8) return;
+    // utf8 may alias current_text when a style setter requests a relayout.
+    std::string next_text(utf8);
+    im.current_text = std::move(next_text);
+    im.layout_dirty = false;
+    auto codepoints = DecodeUtf8(im.current_text);
+
+    const float ls = im.layout_scale;
+
+    // Split into lines and look up pre-rasterised glyph metrics.
+    std::vector<TextLineRunGI> lines;
+    lines.emplace_back();
+    const bool  wrap      = im.style.limit_width && im.style.max_width > 0.0f;
+    const float wrap_limit = im.style.max_width;
+    std::size_t break_head_count = 0;
+    float       break_head_width = 0.0f;
+    std::size_t break_tail_count = 0;
+    bool        have_break       = false;
+    bool        prev_was_space   = false;
+    for (std::uint32_t cp : codepoints) {
+        if (cp == '\n') {
+            lines.emplace_back();
+            have_break     = false;
+            prev_was_space = false;
+            continue;
+        }
+        const auto* gi = im.face->Lookup(cp);
+        if (gi == nullptr) {
+            // Actuator is expected to Populate() before SetText, so this only
+            // fires for codepoints that genuinely failed to rasterise (e.g.
+            // missing in the font). Log-once keeps log noise bounded.
+            if (! im.missing_glyph_logged) {
+                rstd_info("text: codepoint U+{:04X} not rasterised, skipping", cp);
+                im.missing_glyph_logged = true;
+            }
+            continue;
+        }
+        const float advance   = gi->advance_x * ls;
+        const bool  is_space  = IsBreakableSpace(cp);
+        auto*       line      = &lines.back();
+        if (wrap && ! line->glyphs.empty() && line->width + advance > wrap_limit) {
+            if (is_space) {
+                lines.emplace_back();
+                have_break     = false;
+                prev_was_space = false;
+                continue;
+            }
+            std::size_t head_count = line->glyphs.size();
+            float       head_width = line->width;
+            std::size_t tail_count = head_count;
+            if (! AllowsBreakBefore(cp) && have_break) {
+                head_count = break_head_count;
+                head_width = break_head_width;
+                tail_count = break_tail_count;
+            }
+            std::vector<const GlyphInfo*> carry(line->glyphs.begin() + tail_count,
+                                                line->glyphs.end());
+            line->glyphs.resize(head_count);
+            line->width = head_width;
+            lines.emplace_back();
+            line = &lines.back();
+            for (auto* moved : carry) {
+                line->glyphs.push_back(moved);
+                line->width += moved->advance_x * ls;
+            }
+            have_break     = false;
+            prev_was_space = false;
+        }
+        line = &lines.back();
+        if (wrap && is_space && ! line->glyphs.empty() && ! prev_was_space) {
+            have_break       = true;
+            break_head_count = line->glyphs.size();
+            break_head_width = line->width;
+        }
+        line->glyphs.push_back(gi);
+        line->width += advance;
+        if (wrap && is_space && have_break) break_tail_count = line->glyphs.size();
+        prev_was_space = is_space;
+    }
+
+    if (im.style.limit_rows && im.style.max_rows > 0 && lines.size() > im.style.max_rows) {
+        lines.resize(im.style.max_rows);
+        if (im.style.use_ellipsis) {
+            const auto* dots = im.face->Lookup(kEllipsisCodepoint);
+            if (dots != nullptr) {
+                auto&       last  = lines.back();
+                const float dot_w = dots->advance_x * ls;
+                if (wrap) {
+                    while (! last.glyphs.empty() && last.width + dot_w > wrap_limit) {
+                        last.width -= last.glyphs.back()->advance_x * ls;
+                        last.glyphs.pop_back();
+                    }
+                }
+                last.glyphs.push_back(dots);
+                last.width += dot_w;
+            }
+        }
+    }
+
+    std::size_t total_glyph_quads = 0;
+    for (const auto& line : lines) {
+        for (const auto* gi : line.glyphs) {
+            if (gi->pixel_w != 0 && gi->pixel_h != 0) ++total_glyph_quads;
+        }
+    }
+
+    bool        has_bg      = im.style.opaquebackground;
+    std::size_t total_quads = total_glyph_quads + (has_bg ? 1u : 0u);
+    if (total_quads > im.peak_quads) {
+        // Off-RT overflow only — the layouter emits top-to-bottom, so the
+        // dropped tail quads are below the layer RT's visible window. Log-once
+        // keeps a runaway terminal/log script from spamming every frame.
+        if (! im.truncate_logged) {
+            rstd_info("text: {} quads exceed peak capacity {}, truncating tail",
+                      total_quads,
+                      im.peak_quads);
+            im.truncate_logged = true;
+        }
+        total_quads = im.peak_quads;
+        if (has_bg && total_glyph_quads + 1 > im.peak_quads)
+            total_glyph_quads = im.peak_quads - 1;
+        else if (! has_bg)
+            total_glyph_quads = total_quads;
+    }
+
+    auto& fm     = im.metrics;
+    const float ascender    = fm.ascender * ls;
+    const float descender   = fm.descender * ls;
+    const float line_height = fm.line_height * ls;
+    float text_w = 0.0f;
+    for (auto& l : lines)
+        if (l.width > text_w) text_w = l.width;
+    float text_h =
+        ascender - descender + static_cast<float>(lines.size() - 1) * line_height;
+    im.last_text_w          = text_w;
+    im.last_text_h          = text_h;
+    im.last_source_w        = text_w;
+    im.last_source_h        = text_h;
+    im.last_source_center_x = 0.0f;
+    im.last_source_center_y = 0.0f;
+
+    // Every active quad is overwritten below. Draw and upload counts exclude
+    // the inactive tail, so shrinking text needs no capacity-sized clear.
+
+    auto write_quad = [&](std::size_t                 q_idx,
+                          float                       left,
+                          float                       right,
+                          float                       bottom,
+                          float                       top,
+                          float                       u_l,
+                          float                       u_r,
+                          float                       v_t,
+                          float                       v_b,
+                          const std::array<float, 4>& rgba) {
+        std::size_t v_off     = q_idx * 4;
+        const float pos[4][3] = {
+            { left, top, 0.0f },
+            { right, top, 0.0f },
+            { right, bottom, 0.0f },
+            { left, bottom, 0.0f },
+        };
+        const float uv[4][2] = {
+            { u_l, v_t },
+            { u_r, v_t },
+            { u_r, v_b },
+            { u_l, v_b },
+        };
+        for (std::size_t k = 0; k < 4; ++k) {
+            std::memcpy(&im.positions[(v_off + k) * 3], pos[k], sizeof(pos[k]));
+            std::memcpy(&im.texcoords[(v_off + k) * 2], uv[k], sizeof(uv[k]));
+            std::memcpy(&im.colors[(v_off + k) * 4], rgba.data(), sizeof(float) * 4);
+        }
+    };
+
+    float text_top    = +text_h * 0.5f;
+    float text_bottom = -text_h * 0.5f;
+    float text_left   = -text_w * 0.5f;
+    float text_right  = +text_w * 0.5f;
+    (void)text_left;
+    (void)text_right;
+    (void)text_bottom;
+    float pad = im.style.padding;
+
+    std::size_t q = 0;
+
+    if (has_bg) {
+        float                u_l = 1.0f / static_cast<float>(fm.atlas_w);
+        float                u_r = 3.0f / static_cast<float>(fm.atlas_w);
+        float                v_t = 1.0f / static_cast<float>(fm.atlas_h);
+        float                v_b = 3.0f / static_cast<float>(fm.atlas_h);
+        std::array<float, 4> rgba {
+            im.style.background_color[0] * im.style.background_brightness,
+            im.style.background_color[1] * im.style.background_brightness,
+            im.style.background_color[2] * im.style.background_brightness,
+            im.style.alpha,
+        };
+        write_quad(q++,
+                   -text_w * 0.5f - pad,
+                   +text_w * 0.5f + pad,
+                   -text_h * 0.5f - pad,
+                   +text_h * 0.5f + pad,
+                   u_l,
+                   u_r,
+                   v_t,
+                   v_b,
+                   rgba);
+    }
+
+    std::array<float, 4> text_rgba {
+        im.style.color[0] * im.style.brightness,
+        im.style.color[1] * im.style.brightness,
+        im.style.color[2] * im.style.brightness,
+        im.style.alpha,
+    };
+
+    std::size_t emitted_glyphs       = 0;
+    bool        have_glyph_bounds    = false;
+    float       glyph_min_x          = 0.0f;
+    float       glyph_max_x          = 0.0f;
+    float       glyph_min_y          = 0.0f;
+    float       glyph_max_y          = 0.0f;
+    auto        include_glyph_bounds = [&](float left, float right, float bottom, float top) {
+        if (! have_glyph_bounds) {
+            glyph_min_x       = left;
+            glyph_max_x       = right;
+            glyph_min_y       = bottom;
+            glyph_max_y       = top;
+            have_glyph_bounds = true;
+            return;
+        }
+        glyph_min_x = std::min(glyph_min_x, left);
+        glyph_max_x = std::max(glyph_max_x, right);
+        glyph_min_y = std::min(glyph_min_y, bottom);
+        glyph_max_y = std::max(glyph_max_y, top);
+    };
+    for (std::size_t li = 0; li < lines.size(); ++li) {
+        const auto& line = lines[li];
+        float       line_origin_x;
+        if (ContainsSubstring(im.style.halign, "left")) {
+            line_origin_x = -text_w * 0.5f;
+        } else if (ContainsSubstring(im.style.halign, "right")) {
+            line_origin_x = +text_w * 0.5f - line.width;
+        } else {
+            line_origin_x = -line.width * 0.5f;
+        }
+        float baseline_y = text_top - ascender - static_cast<float>(li) * line_height;
+
+        float pen_x = line_origin_x;
+        for (auto* gi : line.glyphs) {
+            if (q >= im.peak_quads) break;
+            if (gi->pixel_w == 0 || gi->pixel_h == 0) {
+                pen_x += gi->advance_x * ls;
+                continue;
+            }
+            float left   = pen_x + gi->bearing_x * ls;
+            float right  = left + gi->layout_w * ls;
+            float top    = baseline_y + gi->bearing_y * ls;
+            float bottom = top - gi->layout_h * ls;
+            float u_l    = static_cast<float>(gi->atlas_x) / static_cast<float>(fm.atlas_w);
+            float u_r =
+                static_cast<float>(gi->atlas_x + gi->pixel_w) / static_cast<float>(fm.atlas_w);
+            float v_t = static_cast<float>(gi->atlas_y) / static_cast<float>(fm.atlas_h);
+            float v_b =
+                static_cast<float>(gi->atlas_y + gi->pixel_h) / static_cast<float>(fm.atlas_h);
+            write_quad(q++, left, right, bottom, top, u_l, u_r, v_t, v_b, text_rgba);
+            include_glyph_bounds(left, right, bottom, top);
+            pen_x += gi->advance_x * ls;
+            ++emitted_glyphs;
+            if (emitted_glyphs >= total_glyph_quads) break;
+        }
+        if (emitted_glyphs >= total_glyph_quads) break;
+    }
+
+    if (have_glyph_bounds) {
+        im.last_source_w               = std::max(1.0f, glyph_max_x - glyph_min_x);
+        im.last_source_h               = std::max(1.0f, glyph_max_y - glyph_min_y);
+        im.last_source_center_x        = 0.5f * (glyph_min_x + glyph_max_x);
+        im.last_source_center_y        = 0.5f * (glyph_min_y + glyph_max_y);
+        if (im.style.center_source) {
+            const float       shift_x      = -im.last_source_center_x;
+            const float       shift_y      = -im.last_source_center_y;
+            const std::size_t vertex_count = q * 4;
+            for (std::size_t i = 0; i < vertex_count; ++i) {
+                im.positions[i * 3 + 0] += shift_x;
+                im.positions[i * 3 + 1] += shift_y;
+            }
+        }
+    }
+
+    // Push into the mesh. Vertex array's stride is interleaved with padding
+    // already laid out by SceneVertexArray; SetVertex scatters by name.
+    auto& v = im.mesh->GetVertexArray(0);
+    v.SetVertex(WE_IN_POSITION, std::span<const float>(im.positions).first(q * 12));
+    v.SetVertex(WE_IN_TEXCOORD, std::span<const float>(im.texcoords).first(q * 8));
+    v.SetVertex(WE_IN_COLOR, std::span<const float>(im.colors).first(q * 16));
+    v.CommitDynamicVertexCount(q * 4);
+
+    auto& idx = im.mesh->GetIndexArray(0);
+    idx.SetRenderDataCount(q * 6);
+
+    im.mesh->SetDirty();
+}
+
+void TextLayouter::SetHorizontalAlign(std::string_view align) {
+    auto& im        = *m_impl;
+    if (im.style.halign == align) return;
+    im.style.halign = std::string(align);
+    im.layout_dirty = true;
+    SetText(im.current_text);
+}
+
+} // namespace sr::text

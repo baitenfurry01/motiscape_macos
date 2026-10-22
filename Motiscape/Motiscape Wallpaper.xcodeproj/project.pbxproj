@@ -1,0 +1,895 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 77;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		A100000B0000000000000000 /* motiscapeScreenSaver.saver in Copy Screen Savers */ = {isa = PBXBuildFile; fileRef = A10000010000000000000000 /* motiscapeScreenSaver.saver */; };
+		A10000100000000000000000 /* Motiscape Screen Saver/thumbnail.png in Resources */ = {isa = PBXBuildFile; fileRef = A10000120000000000000000 /* Motiscape Screen Saver/thumbnail.png */; };
+		B100000B0000000000000000 /* motiscapeLoginItem.app in Embed Login Items */ = {isa = PBXBuildFile; fileRef = B10000010000000000000000 /* motiscapeLoginItem.app */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+		F40000010000000000000001 /* ZIPFoundation in Frameworks */ = {isa = PBXBuildFile; productRef = F40000020000000000000002 /* ZIPFoundation */; };
+		D100000B0000000000000000 /* motiscapeWallpaperExtension.appex in Embed App Extensions */ = {isa = PBXBuildFile; fileRef = D10000010000000000000000 /* motiscapeWallpaperExtension.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+		D10000100000000000000000 /* Motiscape Screen Saver/thumbnail.png in Resources */ = {isa = PBXBuildFile; fileRef = A10000120000000000000000 /* Motiscape Screen Saver/thumbnail.png */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		A100000C0000000000000000 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 5EC47E6E2A2DB2E600120CCC /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = A10000060000000000000000;
+			remoteInfo = MotiscapeScreenSaver;
+		};
+		B100000C0000000000000000 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 5EC47E6E2A2DB2E600120CCC /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = B10000060000000000000000;
+			remoteInfo = "Motiscape Login Item";
+		};
+		D100000C0000000000000000 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 5EC47E6E2A2DB2E600120CCC /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = D10000060000000000000000;
+			remoteInfo = MotiscapeWallpaperExtension;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXCopyFilesBuildPhase section */
+		A100000A0000000000000000 /* Copy Screen Savers */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "Screen Savers";
+			dstSubfolderSpec = 7;
+			files = (
+				A100000B0000000000000000 /* motiscapeScreenSaver.saver in Copy Screen Savers */,
+			);
+			name = "Copy Screen Savers";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		B100000A0000000000000000 /* Embed Login Items */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = Contents/Library/LoginItems;
+			dstSubfolderSpec = 1;
+			files = (
+				B100000B0000000000000000 /* motiscapeLoginItem.app in Embed Login Items */,
+			);
+			name = "Embed Login Items";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		D100000A0000000000000000 /* Embed App Extensions */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = Contents/Extensions;
+			dstSubfolderSpec = 1;
+			files = (
+				D100000B0000000000000000 /* motiscapeWallpaperExtension.appex in Embed App Extensions */,
+			);
+			name = "Embed App Extensions";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXCopyFilesBuildPhase section */
+
+/* Begin PBXFileReference section */
+		5EC47E762A2DB2E600120CCC /* Motiscape Wallpaper.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = motiscape.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		A10000010000000000000000 /* motiscapeScreenSaver.saver */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = motiscapeScreenSaver.saver; sourceTree = BUILT_PRODUCTS_DIR; };
+		A10000120000000000000000 /* Motiscape Screen Saver/thumbnail.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = "Motiscape Screen Saver/thumbnail.png"; sourceTree = "<group>"; };
+		A10000130000000000000000 /* Motiscape Screen Saver/thumbnail@2x.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = "Motiscape Screen Saver/thumbnail@2x.png"; sourceTree = "<group>"; };
+		B10000010000000000000000 /* motiscapeLoginItem.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "motiscapeLoginItem.app"; sourceTree = BUILT_PRODUCTS_DIR; };
+		D10000010000000000000000 /* motiscapeWallpaperExtension.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = motiscapeWallpaperExtension.appex; sourceTree = BUILT_PRODUCTS_DIR; };
+/* End PBXFileReference section */
+
+/* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
+		A100000E0000000000000000 /* Exceptions for "Motiscape Screen Saver" folder in "MotiscapeScreenSaver" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Info.plist,
+			);
+			target = A10000060000000000000000 /* MotiscapeScreenSaver */;
+		};
+		D100000E0000000000000000 /* Exceptions for "Motiscape Wallpaper Extension" folder in "MotiscapeWallpaperExtension" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Info.plist,
+			);
+			target = D10000060000000000000000 /* MotiscapeWallpaperExtension */;
+		};
+/* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
+
+/* Begin PBXFileSystemSynchronizedRootGroup section */
+		E30000010000000000000000 = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = WallpaperExtensionSupport;
+			sourceTree = "<group>";
+		};
+		E20000010000000000000000 = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = WallpaperLayout;
+			sourceTree = "<group>";
+		};
+		A10000020000000000000000 /* Motiscape Screen Saver */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				A100000E0000000000000000 /* Exceptions for "Motiscape Screen Saver" folder in "MotiscapeScreenSaver" target */,
+			);
+			path = "Motiscape Screen Saver";
+			sourceTree = "<group>";
+		};
+		B10000020000000000000000 /* Motiscape Login Item */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = "Motiscape Login Item";
+			sourceTree = "<group>";
+		};
+		BB52C0202FFC254D00C34DE3 /* Motiscape Wallpaper */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = "Motiscape Wallpaper";
+			sourceTree = "<group>";
+		};
+		D10000020000000000000000 /* Motiscape Wallpaper Extension */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				D100000E0000000000000000 /* Exceptions for "Motiscape Wallpaper Extension" folder in "MotiscapeWallpaperExtension" target */,
+			);
+			path = "Motiscape Wallpaper Extension";
+			sourceTree = "<group>";
+		};
+/* End PBXFileSystemSynchronizedRootGroup section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		5EC47E732A2DB2E600120CCC /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				F40000010000000000000001 /* ZIPFoundation in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		A10000030000000000000000 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		B10000030000000000000000 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		D10000030000000000000000 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		5EC47E6D2A2DB2E600120CCC = {
+			isa = PBXGroup;
+			children = (
+				E30000010000000000000000,
+				E20000010000000000000000,
+				BB52C0202FFC254D00C34DE3 /* Motiscape Wallpaper */,
+				A10000020000000000000000 /* Motiscape Screen Saver */,
+				B10000020000000000000000 /* Motiscape Login Item */,
+				D10000020000000000000000 /* Motiscape Wallpaper Extension */,
+				A10000140000000000000000 /* Screen Saver Resources */,
+				5EC47E772A2DB2E600120CCC /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		5EC47E772A2DB2E600120CCC /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				5EC47E762A2DB2E600120CCC /* Motiscape Wallpaper.app */,
+				A10000010000000000000000 /* motiscapeScreenSaver.saver */,
+				B10000010000000000000000 /* motiscapeLoginItem.app */,
+				D10000010000000000000000 /* motiscapeWallpaperExtension.appex */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+		A10000140000000000000000 /* Screen Saver Resources */ = {
+			isa = PBXGroup;
+			children = (
+				A10000120000000000000000 /* Motiscape Screen Saver/thumbnail.png */,
+				A10000130000000000000000 /* Motiscape Screen Saver/thumbnail@2x.png */,
+			);
+			name = "Screen Saver Resources";
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		5EC47E752A2DB2E600120CCC /* Motiscape Wallpaper */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 5EC47EA02A2DB2E700120CCC /* Build configuration list for PBXNativeTarget "Motiscape Wallpaper" */;
+			buildPhases = (
+				5EC47E722A2DB2E600120CCC /* Sources */,
+				5EC47E732A2DB2E600120CCC /* Frameworks */,
+				5EC47E742A2DB2E600120CCC /* Resources */,
+				B100000A0000000000000000 /* Embed Login Items */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				B100000D0000000000000000 /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				BB52C0202FFC254D00C34DE3 /* Motiscape Wallpaper */,
+				E20000010000000000000000,
+			);
+			name = "Motiscape Wallpaper";
+			packageProductDependencies = (
+				F40000020000000000000002 /* ZIPFoundation */,
+			);
+			productName = Motiscape;
+			productReference = 5EC47E762A2DB2E600120CCC /* Motiscape Wallpaper.app */;
+			productType = "com.apple.product-type.application";
+		};
+		A10000060000000000000000 /* MotiscapeScreenSaver */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = A10000090000000000000000 /* Build configuration list for PBXNativeTarget "MotiscapeScreenSaver" */;
+			buildPhases = (
+				A10000050000000000000000 /* Sources */,
+				A10000030000000000000000 /* Frameworks */,
+				A10000040000000000000000 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			fileSystemSynchronizedGroups = (
+				A10000020000000000000000 /* Motiscape Screen Saver */,
+				E20000010000000000000000,
+			);
+			name = MotiscapeScreenSaver;
+			productName = MotiscapeScreenSaver;
+			productReference = A10000010000000000000000 /* motiscapeScreenSaver.saver */;
+			productType = "com.apple.product-type.bundle";
+		};
+		B10000060000000000000000 /* Motiscape Login Item */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = B10000090000000000000000 /* Build configuration list for PBXNativeTarget "Motiscape Login Item" */;
+			buildPhases = (
+				B10000050000000000000000 /* Sources */,
+				B10000030000000000000000 /* Frameworks */,
+				B10000040000000000000000 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			fileSystemSynchronizedGroups = (
+				B10000020000000000000000 /* Motiscape Login Item */,
+			);
+			name = "Motiscape Login Item";
+			productName = "Motiscape Login Item";
+			productReference = B10000010000000000000000 /* motiscapeLoginItem.app */;
+			productType = "com.apple.product-type.application";
+		};
+		D10000060000000000000000 /* MotiscapeWallpaperExtension */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = D10000090000000000000000 /* Build configuration list for PBXNativeTarget "MotiscapeWallpaperExtension" */;
+			buildPhases = (
+				D10000050000000000000000 /* Sources */,
+				D10000030000000000000000 /* Frameworks */,
+				D10000040000000000000000 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			fileSystemSynchronizedGroups = (
+				D10000020000000000000000 /* Motiscape Wallpaper Extension */,
+				E30000010000000000000000,
+				E20000010000000000000000,
+			);
+			name = MotiscapeWallpaperExtension;
+			productName = MotiscapeWallpaperExtension;
+			productReference = D10000010000000000000000 /* motiscapeWallpaperExtension.appex */;
+			productType = "com.apple.product-type.app-extension";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		5EC47E6E2A2DB2E600120CCC /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = 1;
+				LastSwiftUpdateCheck = 1430;
+				LastUpgradeCheck = 1500;
+				ORGANIZATIONNAME = "";
+				TargetAttributes = {
+					5EC47E752A2DB2E600120CCC = {
+						CreatedOnToolsVersion = 14.3.1;
+					};
+					B10000060000000000000000 = {
+						CreatedOnToolsVersion = 16.0;
+					};
+					D10000060000000000000000 = {
+						CreatedOnToolsVersion = 26.0;
+					};
+				};
+			};
+			buildConfigurationList = 5EC47E712A2DB2E600120CCC /* Build configuration list for PBXProject "Motiscape Wallpaper" */;
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				en,
+				Base,
+				"zh-Hans",
+				"zh-Hant",
+			);
+			mainGroup = 5EC47E6D2A2DB2E600120CCC;
+			packageReferences = (
+				F40000030000000000000003 /* XCRemoteSwiftPackageReference "ZIPFoundation" */,
+			);
+			preferredProjectObjectVersion = 77;
+			productRefGroup = 5EC47E772A2DB2E600120CCC /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				5EC47E752A2DB2E600120CCC /* Motiscape Wallpaper */,
+				A10000060000000000000000 /* MotiscapeScreenSaver */,
+				B10000060000000000000000 /* Motiscape Login Item */,
+				D10000060000000000000000 /* MotiscapeWallpaperExtension */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		5EC47E742A2DB2E600120CCC /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		A10000040000000000000000 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				A10000100000000000000000 /* Motiscape Screen Saver/thumbnail.png in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		B10000040000000000000000 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		D10000040000000000000000 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				D10000100000000000000000 /* Motiscape Screen Saver/thumbnail.png in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+
+
+/* Begin PBXSourcesBuildPhase section */
+		5EC47E722A2DB2E600120CCC /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		A10000050000000000000000 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		B10000050000000000000000 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		D10000050000000000000000 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		A100000D0000000000000000 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = A10000060000000000000000 /* MotiscapeScreenSaver */;
+			targetProxy = A100000C0000000000000000 /* PBXContainerItemProxy */;
+		};
+		B100000D0000000000000000 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = B10000060000000000000000 /* Motiscape Login Item */;
+			targetProxy = B100000C0000000000000000 /* PBXContainerItemProxy */;
+		};
+		D100000D0000000000000000 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = D10000060000000000000000 /* MotiscapeWallpaperExtension */;
+			targetProxy = D100000C0000000000000000 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
+/* Begin XCBuildConfiguration section */
+		5EC47E9E2A2DB2E700120CCC /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
+				CLANG_ANALYZER_LOCALIZABILITY_NONLOCALIZED = YES;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++20";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEAD_CODE_STRIPPING = YES;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"DEBUG=1",
+					"$(inherited)",
+				);
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				MACOSX_DEPLOYMENT_TARGET = 14.2;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = NO;
+				SDKROOT = macosx;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+			};
+			name = Debug;
+		};
+		5EC47E9F2A2DB2E700120CCC /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
+				CLANG_ANALYZER_LOCALIZABILITY_NONLOCALIZED = YES;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++20";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEAD_CODE_STRIPPING = YES;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				MACOSX_DEPLOYMENT_TARGET = 14.2;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = NO;
+				SDKROOT = macosx;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+			};
+			name = Release;
+		};
+		5EC47EA12A2DB2E700120CCC /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				ASSETCATALOG_COMPILER_INCLUDE_ALL_APPICON_ASSETS = NO;
+				AUTOMATION_APPLE_EVENTS = NO;
+				CODE_SIGN_ENTITLEMENTS = "Motiscape Wallpaper/Motiscape_Wallpaper.Development.entitlements";
+				"CODE_SIGN_IDENTITY[sdk=macosx*]" = "-";
+				CODE_SIGN_STYLE = Manual;
+				COMBINE_HIDPI_IMAGES = YES;
+				CURRENT_PROJECT_VERSION = 1;
+				DEAD_CODE_STRIPPING = YES;
+				DEVELOPMENT_TEAM = "";
+				ENABLE_APP_SANDBOX = NO;
+				ENABLE_HARDENED_RUNTIME = NO;
+				ENABLE_PREVIEWS = YES;
+				ENABLE_RESOURCE_ACCESS_AUDIO_INPUT = NO;
+				ENABLE_RESOURCE_ACCESS_CALENDARS = NO;
+				ENABLE_RESOURCE_ACCESS_CAMERA = NO;
+				ENABLE_RESOURCE_ACCESS_CONTACTS = NO;
+				ENABLE_RESOURCE_ACCESS_LOCATION = NO;
+				ENABLE_RESOURCE_ACCESS_PHOTO_LIBRARY = NO;
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = "Motiscape-Wallpaper-Info.plist";
+				INFOPLIST_KEY_CFBundleDisplayName = "motiscape";
+				INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = NO;
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.utilities";
+				INFOPLIST_KEY_LSUIElement = YES;
+				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				MACOSX_DEPLOYMENT_TARGET = 14.2;
+				MARKETING_VERSION = 1.4.34;
+				ONLY_ACTIVE_ARCH = NO;
+				PRODUCT_BUNDLE_IDENTIFIER = com.BaiTenG.motiscape.Development;
+				PRODUCT_MODULE_NAME = Motiscape_Wallpaper;
+				PRODUCT_NAME = motiscape;
+				PROVISIONING_PROFILE_SPECIFIER = "";
+				RUNTIME_EXCEPTION_ALLOW_DYLD_ENVIRONMENT_VARIABLES = NO;
+				RUNTIME_EXCEPTION_ALLOW_JIT = NO;
+				RUNTIME_EXCEPTION_ALLOW_UNSIGNED_EXECUTABLE_MEMORY = NO;
+				RUNTIME_EXCEPTION_DEBUGGING_TOOL = NO;
+				RUNTIME_EXCEPTION_DISABLE_EXECUTABLE_PAGE_PROTECTION = NO;
+				RUNTIME_EXCEPTION_DISABLE_LIBRARY_VALIDATION = NO;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 5.0;
+			};
+			name = Debug;
+		};
+		5EC47EA22A2DB2E700120CCC /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				ASSETCATALOG_COMPILER_INCLUDE_ALL_APPICON_ASSETS = NO;
+				AUTOMATION_APPLE_EVENTS = NO;
+				CODE_SIGN_ENTITLEMENTS = "Motiscape Wallpaper/Motiscape_Wallpaper.entitlements";
+				"CODE_SIGN_IDENTITY[sdk=macosx*]" = "-";
+				CODE_SIGN_STYLE = Manual;
+				COMBINE_HIDPI_IMAGES = YES;
+				CURRENT_PROJECT_VERSION = 1;
+				DEAD_CODE_STRIPPING = YES;
+				DEVELOPMENT_TEAM = "";
+				ENABLE_APP_SANDBOX = NO;
+				ENABLE_HARDENED_RUNTIME = NO;
+				ENABLE_PREVIEWS = YES;
+				ENABLE_RESOURCE_ACCESS_AUDIO_INPUT = NO;
+				ENABLE_RESOURCE_ACCESS_CALENDARS = NO;
+				ENABLE_RESOURCE_ACCESS_CAMERA = NO;
+				ENABLE_RESOURCE_ACCESS_CONTACTS = NO;
+				ENABLE_RESOURCE_ACCESS_LOCATION = NO;
+				ENABLE_RESOURCE_ACCESS_PHOTO_LIBRARY = NO;
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = "Motiscape-Wallpaper-Info.plist";
+				INFOPLIST_KEY_CFBundleDisplayName = "motiscape";
+				INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = NO;
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.utilities";
+				INFOPLIST_KEY_LSUIElement = YES;
+				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				MACOSX_DEPLOYMENT_TARGET = 14.2;
+				MARKETING_VERSION = 1.4.34;
+				PRODUCT_BUNDLE_IDENTIFIER = com.baiteng.motiscape;
+				PRODUCT_MODULE_NAME = Motiscape_Wallpaper;
+				PRODUCT_NAME = motiscape;
+				PROVISIONING_PROFILE_SPECIFIER = "";
+				RUNTIME_EXCEPTION_ALLOW_DYLD_ENVIRONMENT_VARIABLES = NO;
+				RUNTIME_EXCEPTION_ALLOW_JIT = NO;
+				RUNTIME_EXCEPTION_ALLOW_UNSIGNED_EXECUTABLE_MEMORY = NO;
+				RUNTIME_EXCEPTION_DEBUGGING_TOOL = NO;
+				RUNTIME_EXCEPTION_DISABLE_EXECUTABLE_PAGE_PROTECTION = NO;
+				RUNTIME_EXCEPTION_DISABLE_LIBRARY_VALIDATION = NO;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 5.0;
+			};
+			name = Release;
+		};
+		A10000070000000000000000 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_IDENTITY = "-";
+				CODE_SIGN_STYLE = Manual;
+				COMBINE_HIDPI_IMAGES = NO;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = "";
+				EXCLUDED_SOURCE_FILE_NAMES = Info.plist;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = "Motiscape Screen Saver/Info.plist";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@loader_path/../Frameworks",
+				);
+				MACOSX_DEPLOYMENT_TARGET = 14.2;
+				MARKETING_VERSION = 1.3.34;
+				ONLY_ACTIVE_ARCH = YES;
+				PRODUCT_BUNDLE_IDENTIFIER = com.BaiTenG.motiscape.ScreenSaver;
+				PRODUCT_MODULE_NAME = MotiscapeScreenSaver;
+				PRODUCT_NAME = motiscapeScreenSaver;
+				SDKROOT = macosx;
+				SKIP_INSTALL = YES;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_VERSION = 5.0;
+				WRAPPER_EXTENSION = saver;
+			};
+			name = Debug;
+		};
+		A10000080000000000000000 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_IDENTITY = "-";
+				CODE_SIGN_STYLE = Manual;
+				COMBINE_HIDPI_IMAGES = NO;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = "";
+				EXCLUDED_SOURCE_FILE_NAMES = Info.plist;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = "Motiscape Screen Saver/Info.plist";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@loader_path/../Frameworks",
+				);
+				MACOSX_DEPLOYMENT_TARGET = 14.2;
+				MARKETING_VERSION = 1.3.34;
+				ONLY_ACTIVE_ARCH = NO;
+				PRODUCT_BUNDLE_IDENTIFIER = com.BaiTenG.motiscape.ScreenSaver;
+				PRODUCT_MODULE_NAME = MotiscapeScreenSaver;
+				PRODUCT_NAME = motiscapeScreenSaver;
+				SDKROOT = macosx;
+				SKIP_INSTALL = YES;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+				SWIFT_VERSION = 5.0;
+				WRAPPER_EXTENSION = saver;
+			};
+			name = Release;
+		};
+		B10000070000000000000000 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				"CODE_SIGN_IDENTITY[sdk=macosx*]" = "-";
+				CODE_SIGN_STYLE = Manual;
+				CURRENT_PROJECT_VERSION = 1;
+				DEAD_CODE_STRIPPING = YES;
+				DEVELOPMENT_TEAM = "";
+				ENABLE_APP_SANDBOX = NO;
+				ENABLE_HARDENED_RUNTIME = NO;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_CFBundleDisplayName = "motiscape 登录项";
+				INFOPLIST_KEY_LSUIElement = YES;
+				MACOSX_DEPLOYMENT_TARGET = 14.2;
+				MARKETING_VERSION = 1.3.34;
+				PRODUCT_BUNDLE_IDENTIFIER = com.baiteng.motiscape.LoginItem;
+				PRODUCT_NAME = motiscapeLoginItem;
+				SKIP_INSTALL = YES;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_VERSION = 5.0;
+			};
+			name = Debug;
+		};
+		B10000080000000000000000 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				"CODE_SIGN_IDENTITY[sdk=macosx*]" = "-";
+				CODE_SIGN_STYLE = Manual;
+				CURRENT_PROJECT_VERSION = 1;
+				DEAD_CODE_STRIPPING = YES;
+				DEVELOPMENT_TEAM = "";
+				ENABLE_APP_SANDBOX = NO;
+				ENABLE_HARDENED_RUNTIME = NO;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_CFBundleDisplayName = "motiscape 登录项";
+				INFOPLIST_KEY_LSUIElement = YES;
+				MACOSX_DEPLOYMENT_TARGET = 14.2;
+				MARKETING_VERSION = 1.3.34;
+				PRODUCT_BUNDLE_IDENTIFIER = com.baiteng.motiscape.LoginItem;
+				PRODUCT_NAME = motiscapeLoginItem;
+				SKIP_INSTALL = YES;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+				SWIFT_VERSION = 5.0;
+			};
+			name = Release;
+		};
+		D10000070000000000000000 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				APPLICATION_EXTENSION_API_ONLY = YES;
+				CODE_SIGN_ENTITLEMENTS = "Motiscape Wallpaper Extension/MotiscapeWallpaperExtension.Development.entitlements";
+				CODE_SIGN_IDENTITY = "-";
+				CODE_SIGN_STYLE = Manual;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = "";
+				ENABLE_APP_SANDBOX = YES;
+				ENABLE_HARDENED_RUNTIME = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = "Motiscape Wallpaper Extension/Info.plist";
+				MACOSX_DEPLOYMENT_TARGET = 26.0;
+				MARKETING_VERSION = 1.3.34;
+				PRODUCT_BUNDLE_IDENTIFIER = com.BaiTenG.motiscape.Development.WallpaperExtension;
+				PRODUCT_MODULE_NAME = MotiscapeWallpaperExtension;
+				PRODUCT_NAME = motiscapeWallpaperExtension;
+				REGISTER_APP_GROUPS = YES;
+				SKIP_INSTALL = YES;
+				SWIFT_OBJC_BRIDGING_HEADER = "Motiscape Wallpaper Extension/WallpaperExtension-Bridging-Header.h";
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_VERSION = 5.0;
+				WRAPPER_EXTENSION = appex;
+			};
+			name = Debug;
+		};
+		D10000080000000000000000 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				APPLICATION_EXTENSION_API_ONLY = YES;
+				CODE_SIGN_ENTITLEMENTS = "Motiscape Wallpaper Extension/MotiscapeWallpaperExtension.entitlements";
+				CODE_SIGN_IDENTITY = "-";
+				CODE_SIGN_STYLE = Manual;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = "";
+				ENABLE_APP_SANDBOX = YES;
+				ENABLE_HARDENED_RUNTIME = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = "Motiscape Wallpaper Extension/Info.plist";
+				MACOSX_DEPLOYMENT_TARGET = 26.0;
+				MARKETING_VERSION = 1.3.34;
+				PRODUCT_BUNDLE_IDENTIFIER = com.BaiTenG.motiscape.WallpaperExtension;
+				PRODUCT_MODULE_NAME = MotiscapeWallpaperExtension;
+				PRODUCT_NAME = motiscapeWallpaperExtension;
+				REGISTER_APP_GROUPS = YES;
+				SKIP_INSTALL = YES;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_OBJC_BRIDGING_HEADER = "Motiscape Wallpaper Extension/WallpaperExtension-Bridging-Header.h";
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+				SWIFT_VERSION = 5.0;
+				WRAPPER_EXTENSION = appex;
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		5EC47E712A2DB2E600120CCC /* Build configuration list for PBXProject "Motiscape Wallpaper" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				5EC47E9E2A2DB2E700120CCC /* Debug */,
+				5EC47E9F2A2DB2E700120CCC /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		5EC47EA02A2DB2E700120CCC /* Build configuration list for PBXNativeTarget "Motiscape Wallpaper" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				5EC47EA12A2DB2E700120CCC /* Debug */,
+				5EC47EA22A2DB2E700120CCC /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		A10000090000000000000000 /* Build configuration list for PBXNativeTarget "MotiscapeScreenSaver" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				A10000070000000000000000 /* Debug */,
+				A10000080000000000000000 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		B10000090000000000000000 /* Build configuration list for PBXNativeTarget "Motiscape Login Item" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				B10000070000000000000000 /* Debug */,
+				B10000080000000000000000 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		D10000090000000000000000 /* Build configuration list for PBXNativeTarget "MotiscapeWallpaperExtension" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				D10000070000000000000000 /* Debug */,
+				D10000080000000000000000 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+/* End XCConfigurationList section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		F40000030000000000000003 /* XCRemoteSwiftPackageReference "ZIPFoundation" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/weichsel/ZIPFoundation.git";
+			requirement = {
+				kind = exactVersion;
+				version = 0.9.20;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		F40000020000000000000002 /* ZIPFoundation */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = F40000030000000000000003 /* XCRemoteSwiftPackageReference "ZIPFoundation" */;
+			productName = ZIPFoundation;
+		};
+/* End XCSwiftPackageProductDependency section */
+	};
+	rootObject = 5EC47E6E2A2DB2E600120CCC /* Project object */;
+}

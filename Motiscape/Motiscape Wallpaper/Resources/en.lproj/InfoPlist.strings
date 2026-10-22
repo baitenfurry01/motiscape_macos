@@ -1,0 +1,3 @@
+"NSAudioCaptureUsageDescription" = "motiscape captures system audio for audio-responsive wallpapers.";
+"CFBundleName" = "motiscape";
+"CFBundleDisplayName" = "motiscape";

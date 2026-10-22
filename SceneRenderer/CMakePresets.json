@@ -1,0 +1,91 @@
+{
+  "version": 6,
+  "cmakeMinimumRequired": {
+    "major": 4,
+    "minor": 3,
+    "patch": 1
+  },
+  "configurePresets": [
+    {
+      "name": "_clang-base",
+      "hidden": true,
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/${presetName}",
+      "cacheVariables": {
+        "CMAKE_C_COMPILER": "clang",
+        "CMAKE_CXX_COMPILER": "clang++",
+        "CMAKE_LINKER_TYPE": "LLD",
+        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON"
+      }
+    },
+    {
+      "name": "macos-clang-release",
+      "displayName": "macOS · Homebrew Clang · Release (x86_64)",
+      "description": "SceneRenderer engine with macOS wallpaper and screen saver hosts (Intel).",
+      "inherits": "_clang-base",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_C_COMPILER": "/usr/local/opt/llvm/bin/clang",
+        "CMAKE_CXX_COMPILER": "/usr/local/opt/llvm/bin/clang++",
+        "CMAKE_LINKER_TYPE": "DEFAULT",
+        "CMAKE_OSX_DEPLOYMENT_TARGET": "14.2",
+        "CMAKE_PREFIX_PATH": "/usr/local;/opt/homebrew;/usr/local/opt/llvm;/opt/homebrew/opt/llvm;/usr/local/opt/molten-vk;/opt/homebrew/opt/molten-vk;/usr/local/opt/vulkan-loader;/opt/homebrew/opt/vulkan-loader;/usr/local/opt/vulkan-headers;/opt/homebrew/opt/vulkan-headers;/usr/local/opt/freetype;/opt/homebrew/opt/freetype;/usr/local/opt/lz4;/opt/homebrew/opt/lz4"
+      },
+      "environment": {
+        "PKG_CONFIG_PATH": "$penv{PKG_CONFIG_PATH}:/usr/local/lib/pkgconfig:/usr/local/share/pkgconfig:/opt/homebrew/lib/pkgconfig:/opt/homebrew/share/pkgconfig:/usr/local/opt/freetype/lib/pkgconfig:/opt/homebrew/opt/freetype/lib/pkgconfig:/usr/local/opt/vulkan-loader/lib/pkgconfig:/opt/homebrew/opt/vulkan-loader/lib/pkgconfig:/usr/local/opt/llvm/lib/pkgconfig:/opt/homebrew/opt/llvm/lib/pkgconfig"
+      }
+    },
+    {
+      "name": "macos-clang-debug",
+      "displayName": "macOS · Homebrew Clang · Debug (x86_64)",
+      "inherits": "macos-clang-release",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug"
+      }
+    },
+    {
+      "name": "macos-arm64-clang-release",
+      "displayName": "macOS · Homebrew Clang · Release (arm64)",
+      "description": "SceneRenderer engine with macOS wallpaper and screen saver hosts (Apple Silicon).",
+      "inherits": "_clang-base",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_C_COMPILER": "/opt/homebrew/opt/llvm/bin/clang",
+        "CMAKE_CXX_COMPILER": "/opt/homebrew/opt/llvm/bin/clang++",
+        "CMAKE_LINKER_TYPE": "DEFAULT",
+        "CMAKE_OSX_DEPLOYMENT_TARGET": "14.2",
+        "CMAKE_OSX_ARCHITECTURES": "arm64",
+        "CMAKE_PREFIX_PATH": "/opt/homebrew;/opt/homebrew/opt/llvm;/opt/homebrew/opt/molten-vk;/opt/homebrew/opt/vulkan-loader;/opt/homebrew/opt/vulkan-headers;/opt/homebrew/opt/freetype;/opt/homebrew/opt/lz4"
+      },
+      "environment": {
+        "PKG_CONFIG_PATH": "$penv{PKG_CONFIG_PATH}:/opt/homebrew/lib/pkgconfig:/opt/homebrew/share/pkgconfig:/opt/homebrew/opt/freetype/lib/pkgconfig:/opt/homebrew/opt/vulkan-loader/lib/pkgconfig:/opt/homebrew/opt/llvm/lib/pkgconfig"
+      }
+    },
+    {
+      "name": "macos-arm64-clang-debug",
+      "displayName": "macOS · Homebrew Clang · Debug (arm64)",
+      "inherits": "macos-arm64-clang-release",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug"
+      }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "macos-clang-release",
+      "configurePreset": "macos-clang-release"
+    },
+    {
+      "name": "macos-clang-debug",
+      "configurePreset": "macos-clang-debug"
+    },
+    {
+      "name": "macos-arm64-clang-release",
+      "configurePreset": "macos-arm64-clang-release"
+    },
+    {
+      "name": "macos-arm64-clang-debug",
+      "configurePreset": "macos-arm64-clang-debug"
+    }
+  ]
+}

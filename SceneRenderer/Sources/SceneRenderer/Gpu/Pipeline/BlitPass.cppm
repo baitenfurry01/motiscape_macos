@@ -1,0 +1,47 @@
+module;
+
+export module sr.vulkan_render:copy_pass;
+import rstd.cppstd;
+import sr.vulkan;
+import sr.scene;
+
+import :vulkan_pass;
+import :resource;
+
+export namespace sr::vulkan
+{
+
+class CopyPass : public VulkanPass {
+public:
+    struct Desc {
+        std::string                   src;
+        std::string                   dst;
+        std::optional<TextureRequest> src_request;
+        std::optional<TextureRequest> dst_request;
+        // A snapshot copy with an implicit destination must use the exact
+        // source allocation description.  Re-resolving it from the generated
+        // destination name can otherwise select a different dynamic target.
+        bool                          dst_matches_src { false };
+
+        ImageParameters vk_src;
+        ImageParameters vk_dst;
+    };
+
+    const Desc& desc() const { return m_desc; }
+    CopyPass(const Desc&);
+    virtual ~CopyPass();
+
+    PassInvalidationFlags                     finalizeResourceRequests(Scene&) override;
+    std::vector<PassTextureRequestDiagnostic> textureRequestDiagnostics() const override;
+
+    void prepare(Scene&, const Device&, RenderingResources&) override;
+    void execute(const Device&, RenderingResources&) override;
+    void destory(const Device&, RenderingResources&) override;
+
+private:
+    void ensureDestinationRenderTarget(Scene&);
+
+    Desc m_desc;
+};
+
+} // namespace sr::vulkan

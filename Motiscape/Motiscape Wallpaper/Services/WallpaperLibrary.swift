@@ -1,0 +1,602 @@
+import AppKit
+import AVFoundation
+import Foundation
+
+enum WPImportError: LocalizedError, Identifiable {
+    case permissionDenied
+    case doesNotContainWallpaper
+    case unsupportedType
+    case copyFailed(String)
+    case unknown
+
+    var id: String { errorDescription ?? "unknown" }
+
+    var errorDescription: String? {
+        switch self {
+        case .permissionDenied: return L("没有访问权限")
+        case .doesNotContainWallpaper: return L("文件夹内没有壁纸")
+        case .unsupportedType: return L("不支持的壁纸类型")
+        case .copyFailed(let m): return L("复制失败：%@", m)
+        case .unknown: return L("未知错误")
+        }
+    }
+
+    var recoverySuggestion: String? {
+        switch self {
+        case .permissionDenied: return L("请在“系统设置 - 隐私与安全性”中授予访问权限后重试。")
+        case .doesNotContainWallpaper: return L("所选文件夹需包含 project.json，请确认后重试。")
+        case .unsupportedType: return L("Motiscape 仅支持 场景 / 网页 / 视频 类壁纸。")
+        case .copyFailed: return L("请检查磁盘空间与权限后重试。")
+        case .unknown: return nil
+        }
+    }
+}
+
+enum WallpaperLibrarySourceRole: String, Hashable {
+    case managedWorkshop
+    case legacyWorkshop
+    case imported
+}
+
+struct WallpaperLibrarySource: Identifiable, Hashable {
+    let role: WallpaperLibrarySourceRole
+    let title: String
+    let detail: String
+    let url: URL
+    let exists: Bool
+
+    var id: String { role.rawValue + ":" + url.standardizedFileURL.path }
+}
+
+final class WallpaperLibrary {
+    static let shared = WallpaperLibrary()
+
+    private let fm = FileManager.default
+    private let additionIndexURL: URL
+    private let additionIndexLock = NSLock()
+    private var additionIndex: LibraryAdditionIndex
+    private let additionIndexWriteAllowed: Bool
+
+    private struct LibraryAdditionIndex: Codable {
+        var version = 1
+        var paths: [String: Date] = [:]
+        var workshopIDs: [String: Date] = [:]
+    }
+
+    init(additionIndexURL: URL = AppIntegrationFixture.supportDirectory?.appending(path: "library-additions.json") ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        .appending(path: "motiscape/library-additions.json")) {
+        self.additionIndexURL = additionIndexURL
+        do {
+            if let decoded = try LegacyLibraryAdditionIndex.read(from: additionIndexURL) {
+                additionIndex = LibraryAdditionIndex(version: decoded.version, paths: decoded.paths, workshopIDs: decoded.workshopIDs)
+            } else { additionIndex = LibraryAdditionIndex() }
+            additionIndexWriteAllowed = true
+        } catch {
+            additionIndex = LibraryAdditionIndex()
+            additionIndexWriteAllowed = false
+            NSLog("[Motiscape] Keeping unreadable library addition index unchanged: %@", error.localizedDescription)
+        }
+    }
+
+    /// What a cached preset's resolution depended on, so a cache hit can be
+    /// re-checked cheaply. The plain signature covers a wallpaper's *own*
+    /// project.json and directory only — installing or deleting the base
+    /// wallpaper of a preset changes neither, so without this probe a preset
+    /// keeps whatever status it had the first time it was loaded: stuck on
+    /// "缺少基础壁纸" after the base arrives, or still shown as playable after
+    /// the base is deleted.
+    private struct DependencyProbe {
+        let dependencyID: String
+        /// nil when the dependency could not be resolved at load time.
+        let resolvedDirectory: URL?
+        /// mtime#size of the resolved base's project.json.
+        let resolvedSignature: String?
+        /// The base's entry file, which `load` required to exist.
+        let resolvedEntryPath: String?
+    }
+
+    private struct CachedWallpaper {
+        let signature: String
+        let wallpaper: WEWallpaper
+        let dependencyProbe: DependencyProbe?
+    }
+    private let loadCacheLock = NSLock()
+    private var loadCache: [String: CachedWallpaper] = [:]
+
+    private struct DirectoryMonitor {
+        let source: DispatchSourceFileSystemObject
+        let descriptor: Int32
+    }
+
+    private var directoryMonitors: [DirectoryMonitor] = []
+    var defaultImportedDirectory: URL {
+        if let root = AppIntegrationFixture.libraryDirectory { return root }
+        return fm.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appending(path: "motiscape/Wallpapers")
+    }
+
+    var managedWorkshopDirectory: URL {
+        if let root = AppIntegrationFixture.supportDirectory { return root.appending(path: "Workshop") }
+        let directory = fm.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appending(path: "motiscape/Workshop/content/431960", directoryHint: .isDirectory)
+        if !fm.fileExists(atPath: directory.path) {
+            try? fm.createDirectory(at: directory, withIntermediateDirectories: true)
+        }
+        return directory
+    }
+
+    var legacyWorkshopDirectories: [URL] {
+        if AppIntegrationFixture.isEnabled { return [] }
+        let root = fm.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appending(path: "motiscape/steamcmd", directoryHint: .isDirectory)
+        return [
+            root.appending(path: "home/Library/Application Support/Steam/steamapps/workshop/content/431960", directoryHint: .isDirectory),
+            root.appending(path: "steamapps/workshop/content/431960", directoryHint: .isDirectory)
+        ]
+    }
+
+    var importedDirectory: URL {
+        let base = defaultImportedDirectory
+        if !fm.fileExists(atPath: base.path) {
+            try? fm.createDirectory(at: base, withIntermediateDirectories: true)
+        }
+        return base
+    }
+
+    var librarySources: [WallpaperLibrarySource] {
+        var result: [WallpaperLibrarySource] = []
+
+        func append(_ role: WallpaperLibrarySourceRole, _ title: String, _ detail: String, _ url: URL, always: Bool = false) {
+            let normalized = url.standardizedFileURL
+            let exists = fm.fileExists(atPath: normalized.path)
+            guard always || exists else { return }
+            result.append(WallpaperLibrarySource(role: role, title: title, detail: detail, url: normalized, exists: exists))
+        }
+
+        append(.managedWorkshop, L("Motiscape 下载目录"), L("Motiscape 从 Steam 创意工坊下载和更新壁纸的位置"), managedWorkshopDirectory, always: true)
+        for directory in legacyWorkshopDirectories where containsWorkshopWallpaper(in: directory) {
+            append(.legacyWorkshop, L("Motiscape 旧版下载目录"), L("尚未迁移的 Motiscape 创意工坊壁纸"), directory)
+        }
+        append(.imported, L("导入壁纸目录"), L("手动导入或由视频创建的本地壁纸"), importedDirectory, always: true)
+        return result
+    }
+
+    private var scanSources: [WallpaperLibrarySource] {
+        var paths = Set<String>()
+        return librarySources.filter { source in
+            source.exists && paths.insert(source.url.path).inserted
+        }
+    }
+
+    private var sourceDirectories: [URL] {
+        scanSources.map(\.url)
+    }
+
+    private func containsWorkshopWallpaper(in directory: URL) -> Bool {
+        guard let contents = try? fm.contentsOfDirectory(
+            at: directory, includingPropertiesForKeys: [.isDirectoryKey],
+            options: [.skipsHiddenFiles]) else { return false }
+        return contents.contains { url in
+            let id = url.lastPathComponent
+            guard !id.isEmpty, id.allSatisfy(\.isNumber),
+                  (try? url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true else {
+                return false
+            }
+            return fm.fileExists(atPath: url.appending(path: "project.json").path)
+        }
+    }
+
+    func allWallpaperURLs() -> [URL] {
+        var result: [URL] = []
+        var seenWorkshopIDs = Set<String>()
+        for source in scanSources {
+            let dir = source.url
+            guard let contents = try? fm.contentsOfDirectory(
+                at: dir, includingPropertiesForKeys: [.isDirectoryKey],
+                options: [.skipsHiddenFiles]) else { continue }
+            for url in contents {
+                let isDir = (try? url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) ?? false
+                guard isDir else { continue }
+                if fm.fileExists(atPath: url.appending(path: "project.json").path) {
+                    let id = url.lastPathComponent
+                    if source.role != .imported, !id.isEmpty, id.allSatisfy(\.isNumber) {
+                        if source.role == .legacyWorkshop, seenWorkshopIDs.contains(id) { continue }
+                        seenWorkshopIDs.insert(id)
+                    }
+                    result.append(url)
+                }
+            }
+        }
+        return result
+    }
+
+    func workshopItemDirectory(for workshopId: String) -> URL? {
+        workshopItemDirectories(for: workshopId).first
+    }
+
+    func workshopItemDirectories(for workshopId: String) -> [URL] {
+        sourceDirectories
+            .map { $0.appending(path: workshopId) }
+            .filter { fm.fileExists(atPath: $0.appending(path: "project.json").path) }
+    }
+
+    /// Every installed workshop item keyed by its directory name (the workshop
+    /// id). First occurrence wins when the same id exists in multiple sources.
+    /// Used to build the installed-state snapshot off the main thread so card
+    /// views never touch the filesystem while rendering.
+    func allWorkshopIDDirectories() -> [(id: String, url: URL)] {
+        var result: [(id: String, url: URL)] = []
+        var seen = Set<String>()
+        for url in allWallpaperURLs() {
+            let id = url.lastPathComponent
+            guard seen.insert(id).inserted else { continue }
+            result.append((id, url))
+        }
+        return result
+    }
+
+    func loadAll() -> [WEWallpaper] {
+        WallpaperViewModel.invalidatePropertyResolutionCache()
+        let urls = allWallpaperURLs()
+        loadCacheLock.lock()
+        let previous = loadCache
+        loadCacheLock.unlock()
+
+        var next: [String: CachedWallpaper] = [:]
+        next.reserveCapacity(urls.count)
+        let wallpapers = urls.map { url -> WEWallpaper in
+            let path = url.standardizedFileURL.path
+            let projectURL = url.appending(path: "project.json")
+            let projectValues = try? projectURL.resourceValues(
+                forKeys: [.contentModificationDateKey, .fileSizeKey])
+            let directoryValues = try? url.resourceValues(forKeys: [.contentModificationDateKey])
+            let signature = "\(projectValues?.contentModificationDate?.timeIntervalSince1970 ?? 0)#\(projectValues?.fileSize ?? 0)#\(directoryValues?.contentModificationDate?.timeIntervalSince1970 ?? 0)"
+            if let cached = previous[path], cached.signature == signature,
+               isDependencyProbeStillValid(cached.dependencyProbe) {
+                next[path] = cached
+                return cached.wallpaper
+            }
+            let wallpaper = WEWallpaper.load(from: url)
+            next[path] = CachedWallpaper(signature: signature,
+                                        wallpaper: wallpaper,
+                                        dependencyProbe: makeDependencyProbe(for: wallpaper))
+            return wallpaper
+        }
+
+        loadCacheLock.lock()
+        loadCache = next
+        loadCacheLock.unlock()
+        _ = additionDates(for: wallpapers)
+        return wallpapers
+    }
+
+    func additionDates(for wallpapers: [WEWallpaper]) -> [String: Date] {
+        let workshopPrefixes = librarySources.filter { $0.role != .imported }
+            .map { $0.url.standardizedFileURL.path }
+        additionIndexLock.lock()
+        var changed = false
+        var result: [String: Date] = [:]
+        result.reserveCapacity(wallpapers.count)
+        for wallpaper in wallpapers {
+            let path = wallpaper.wallpaperDirectory.standardizedFileURL.path
+            if let existing = additionIndex.paths[path] {
+                result[wallpaper.id] = existing
+                continue
+            }
+            let name = wallpaper.wallpaperDirectory.lastPathComponent
+            let isWorkshop = workshopPrefixes.contains { path == $0 || path.hasPrefix($0 + "/") }
+            let workshopID = isWorkshop && !name.isEmpty && name.allSatisfy(\.isNumber) ? name : nil
+            let date: Date
+            if let existing = additionIndex.paths[path] {
+                date = existing
+            } else if let workshopID, let existing = additionIndex.workshopIDs[workshopID] {
+                date = existing
+                additionIndex.paths[path] = existing
+                changed = true
+            } else {
+                date = inferredAdditionDate(at: wallpaper.wallpaperDirectory)
+                additionIndex.paths[path] = date
+                if let workshopID {
+                    additionIndex.workshopIDs[workshopID] = date
+                }
+                changed = true
+            }
+            result[wallpaper.id] = date
+        }
+        if changed {
+            persistAdditionIndexLocked()
+        }
+        additionIndexLock.unlock()
+        return result
+    }
+
+    func recordAdded(at url: URL, workshopID: String? = nil, date: Date = Date()) {
+        let path = url.standardizedFileURL.path
+        additionIndexLock.lock()
+        let pathChanged = additionIndex.paths[path] != date
+        let workshopChanged = workshopID.map { additionIndex.workshopIDs[$0] != date } ?? false
+        if pathChanged || workshopChanged {
+            additionIndex.paths[path] = date
+            if let workshopID {
+                additionIndex.workshopIDs[workshopID] = date
+            }
+            persistAdditionIndexLocked()
+        }
+        additionIndexLock.unlock()
+    }
+
+    /// A completed local import is one library update, not one synchronous
+    /// index rewrite and observer refresh per wallpaper. Keep the legacy
+    /// single-item/workshop API unchanged for its other callers.
+    func didImport(at urls: [URL], date: Date = Date()) {
+        let paths = Set(urls.map { $0.standardizedFileURL.path })
+        guard !paths.isEmpty else { return }
+        additionIndexLock.lock()
+        var changed = false
+        for path in paths where additionIndex.paths[path] != date {
+            additionIndex.paths[path] = date
+            changed = true
+        }
+        if changed { persistAdditionIndexLocked() }
+        additionIndexLock.unlock()
+
+        loadCacheLock.lock()
+        for path in paths { loadCache.removeValue(forKey: path) }
+        loadCacheLock.unlock()
+        WEWallpaper.invalidateSizeCache()
+        // nil means the observer should refresh the collection. Retain the
+        // existing single-item notification payload when only one changed.
+        let object = paths.count == 1 ? urls.first?.standardizedFileURL : nil
+        NotificationCenter.default.post(name: .wallpaperLibraryChanged, object: object)
+    }
+
+    private func workshopID(for wallpaper: WEWallpaper) -> String? {
+        guard isWorkshopSource(wallpaper) else { return nil }
+        let value = wallpaper.wallpaperDirectory.lastPathComponent
+        guard !value.isEmpty, value.allSatisfy(\.isNumber) else { return nil }
+        return value
+    }
+
+    private func inferredAdditionDate(at directory: URL) -> Date {
+        let directoryValues = try? directory.resourceValues(forKeys: [.creationDateKey, .contentModificationDateKey])
+        let projectValues = try? directory.appending(path: "project.json")
+            .resourceValues(forKeys: [.creationDateKey, .contentModificationDateKey])
+        return directoryValues?.creationDate
+            ?? projectValues?.creationDate
+            ?? directoryValues?.contentModificationDate
+            ?? projectValues?.contentModificationDate
+            ?? .distantPast
+    }
+
+    private func persistAdditionIndexLocked() {
+        guard additionIndexWriteAllowed else { return }
+        do {
+            // A file may become unreadable/newer after launch; preserve it too.
+            _ = try LegacyLibraryAdditionIndex.read(from: additionIndexURL)
+            try fm.createDirectory(at: additionIndexURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.sortedKeys]
+            try encoder.encode(additionIndex).write(to: additionIndexURL, options: .atomic)
+        } catch {
+            NSLog("[Motiscape] Failed to persist library addition index: %@", error.localizedDescription)
+        }
+    }
+
+    /// Records what a preset's cached resolution rests on. Non-presets get nil
+    /// and cost nothing.
+    private func makeDependencyProbe(for wallpaper: WEWallpaper) -> DependencyProbe? {
+        guard let dependencyID = wallpaper.presetDependency?.rawValue else { return nil }
+        guard wallpaper.presetStatus == .resolved else {
+            return DependencyProbe(dependencyID: dependencyID,
+                                   resolvedDirectory: nil,
+                                   resolvedSignature: nil,
+                                   resolvedEntryPath: nil)
+        }
+        // A resolved preset renders out of the base wallpaper's directory.
+        let baseDirectory = wallpaper.renderDirectory
+        return DependencyProbe(dependencyID: dependencyID,
+                               resolvedDirectory: baseDirectory,
+                               resolvedSignature: projectSignature(at: baseDirectory),
+                               resolvedEntryPath: wallpaper.resolvedEntryURL.path)
+    }
+
+    /// True when a cached preset can be reused. Costs one or two `stat()`s per
+    /// preset per refresh; non-presets short-circuit immediately.
+    private func isDependencyProbeStillValid(_ probe: DependencyProbe?) -> Bool {
+        guard let probe else { return true }
+        guard let directory = probe.resolvedDirectory else {
+            // Was unresolved. Any candidate directory appearing means the base
+            // may now be installed, so re-resolve.
+            return workshopItemDirectories(for: probe.dependencyID).isEmpty
+        }
+        // Was resolved. The base's manifest must still be there and unchanged,
+        // and its entry file must still exist — `WEWallpaper.load` required
+        // both, and deleting either invalidates this preset.
+        //
+        // For a chained preset the recorded directory is the *ultimate* base, so
+        // the immediate dependency is checked separately: removing that middle
+        // link leaves the ultimate base intact and would otherwise go unnoticed.
+        guard !workshopItemDirectories(for: probe.dependencyID).isEmpty else { return false }
+        guard projectSignature(at: directory) == probe.resolvedSignature else { return false }
+        guard let entryPath = probe.resolvedEntryPath else { return false }
+        return fm.fileExists(atPath: entryPath)
+    }
+
+    /// mtime#size of a wallpaper directory's project.json, or nil if absent.
+    private func projectSignature(at directory: URL) -> String? {
+        let projectURL = directory.appending(path: "project.json")
+        guard let values = try? projectURL.resourceValues(
+            forKeys: [.contentModificationDateKey, .fileSizeKey]) else { return nil }
+        return "\(values.contentModificationDate?.timeIntervalSince1970 ?? 0)#\(values.fileSize ?? 0)"
+    }
+
+    // MARK: - 导入
+
+    @discardableResult
+    func importWallpaperFolder(at url: URL) throws -> URL {
+        guard (try? url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true else {
+            throw WPImportError.doesNotContainWallpaper
+        }
+        guard fm.fileExists(atPath: url.appending(path: "project.json").path) else {
+            throw WPImportError.doesNotContainWallpaper
+        }
+        let dest = uniqueDestination(for: url.lastPathComponent)
+        do {
+            try fm.copyItem(at: url, to: dest)
+        } catch {
+            throw WPImportError.copyFailed(error.localizedDescription)
+        }
+        recordAdded(at: dest)
+        libraryDidChange(at: dest)
+        return dest
+    }
+
+    @discardableResult
+    func importVideoFile(at url: URL) throws -> URL {
+        let ext = url.pathExtension.lowercased()
+        guard ["mp4", "mov", "m4v"].contains(ext) else {
+            throw WPImportError.unsupportedType
+        }
+        let baseName = url.deletingPathExtension().lastPathComponent
+        let dest = uniqueDestination(for: baseName)
+        do {
+            try fm.createDirectory(at: dest, withIntermediateDirectories: true)
+            let fileName = url.lastPathComponent
+            try fm.copyItem(at: url, to: dest.appending(path: fileName))
+
+            let previewName = "preview.jpg"
+            if let jpeg = try? Self.generateThumbnail(for: url) {
+                try? jpeg.write(to: dest.appending(path: previewName), options: .atomic)
+            }
+
+            let project = WEProject(file: fileName,
+                                    preview: previewName,
+                                    title: baseName,
+                                    type: "video")
+            let data = try JSONEncoder().encode(project)
+            try data.write(to: dest.appending(path: "project.json"), options: .atomic)
+        } catch let e as WPImportError {
+            throw e
+        } catch {
+            throw WPImportError.copyFailed(error.localizedDescription)
+        }
+        recordAdded(at: dest)
+        libraryDidChange(at: dest)
+        return dest
+    }
+
+    @discardableResult
+    func importAny(at url: URL) throws -> URL {
+        let isDir = (try? url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) ?? false
+        if isDir {
+            return try importWallpaperFolder(at: url)
+        } else {
+            return try importVideoFile(at: url)
+        }
+    }
+
+    private func uniqueDestination(for name: String) -> URL {
+        var dest = importedDirectory.appending(path: name)
+        var counter = 1
+        while fm.fileExists(atPath: dest.path) {
+            dest = importedDirectory.appending(path: "\(name)_\(counter)")
+            counter += 1
+        }
+        return dest
+    }
+
+    static func generateThumbnail(for videoURL: URL) throws -> Data? {
+        let asset = AVURLAsset(url: videoURL)
+        let generator = AVAssetImageGenerator(asset: asset)
+        generator.appliesPreferredTrackTransform = true
+        let time = CMTimeMake(value: 1, timescale: 1)
+        let cgImage = try generator.copyCGImage(at: time, actualTime: nil)
+        let rep = NSBitmapImageRep(cgImage: cgImage)
+        return rep.representation(using: .jpeg, properties: [.compressionFactor: 0.85])
+    }
+
+    func trash(_ wallpaper: WEWallpaper) throws {
+        try fm.trashItem(at: wallpaper.wallpaperDirectory, resultingItemURL: nil)
+        libraryDidChange(at: wallpaper.wallpaperDirectory)
+    }
+
+    func delete(_ wallpaper: WEWallpaper) throws {
+        try fm.removeItem(at: wallpaper.wallpaperDirectory)
+        libraryDidChange(at: wallpaper.wallpaperDirectory)
+    }
+
+    @discardableResult
+    func removeManagedWorkshopItem(workshopId: String) throws -> URL? {
+        guard !workshopId.isEmpty, workshopId.allSatisfy(\.isNumber) else { return nil }
+        let directory = managedWorkshopDirectory.appending(path: workshopId, directoryHint: .isDirectory)
+        guard fm.fileExists(atPath: directory.path) else { return nil }
+        try fm.removeItem(at: directory)
+        libraryDidChange(at: directory)
+        return directory
+    }
+
+    func isImported(_ wallpaper: WEWallpaper) -> Bool {
+        FilePathScope.contains(wallpaper.wallpaperDirectory.path, directory: importedDirectory.path)
+    }
+
+    /// True when a wallpaper lives in one of the Steam sources. This
+    /// is intentionally separate from `isImported`: a numeric folder name in a
+    /// user-selected import directory is not enough evidence that it is a
+    /// Workshop item.
+    func isWorkshopSource(_ wallpaper: WEWallpaper) -> Bool {
+        let path = wallpaper.wallpaperDirectory.standardizedFileURL.path
+        return librarySources.contains { source in
+            guard source.role != .imported else { return false }
+            let prefix = source.url.standardizedFileURL.path
+            return path == prefix || path.hasPrefix(prefix + "/")
+        }
+    }
+
+    // MARK: - Directory Monitoring
+
+    func startMonitoringWorkshopDirectory(onChange: @escaping () -> Void) {
+        cancelDirectoryMonitors()
+
+        for directory in sourceDirectories {
+            let descriptor = open(directory.path, O_EVTONLY)
+            guard descriptor >= 0 else { continue }
+            let source = DispatchSource.makeFileSystemObjectSource(
+                fileDescriptor: descriptor,
+                eventMask: [.write, .delete, .rename],
+                queue: .main
+            )
+            source.setEventHandler { [weak self] in
+                onChange()
+                self?.libraryDidChange(at: nil)
+            }
+            source.setCancelHandler { close(descriptor) }
+            directoryMonitors.append(DirectoryMonitor(source: source, descriptor: descriptor))
+            source.resume()
+        }
+    }
+
+    func stopMonitoringWorkshopDirectory() {
+        cancelDirectoryMonitors()
+    }
+
+    private func cancelDirectoryMonitors() {
+        directoryMonitors.forEach { $0.source.cancel() }
+        directoryMonitors.removeAll()
+    }
+
+    func libraryDidChange(at url: URL?) {
+        loadCacheLock.lock()
+        if let url {
+            loadCache.removeValue(forKey: url.standardizedFileURL.path)
+        } else {
+            loadCache.removeAll()
+        }
+        loadCacheLock.unlock()
+        WEWallpaper.invalidateSizeCache()
+        NotificationCenter.default.post(name: .wallpaperLibraryChanged, object: url)
+    }
+}
+
+extension Notification.Name {
+    static let wallpaperLibraryChanged = Notification.Name("wallpaperLibraryChanged")
+}

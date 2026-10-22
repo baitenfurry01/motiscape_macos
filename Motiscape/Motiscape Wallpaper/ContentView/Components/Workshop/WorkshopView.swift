@@ -1,0 +1,385 @@
+import SwiftUI
+
+struct WorkshopView: View {
+    @Environment(GlobalSettingsViewModel.self) private var globalSettingsViewModel
+    @Bindable var workshopViewModel: WorkshopViewModel
+    @Bindable var viewModel: ContentViewModel
+    @Bindable var wallpaperViewModel: WallpaperViewModel
+    let isActive: Bool
+    #if DEBUG
+    var startsServices = true
+    #endif
+
+    var body: some View {
+        @Bindable var globalSettingsViewModel = globalSettingsViewModel
+        VStack(spacing: 8) {
+            WorkshopSearchBar(workshopViewModel: workshopViewModel, viewModel: viewModel)
+            HStack(spacing: BrowseToolbarMetrics.spacing) {
+                Text(L("创意工坊"))
+                    .font(.headline)
+                Spacer()
+
+                if workshopViewModel.isLoading {
+                    Button(L("取消搜索")) { workshopViewModel.cancelSearch() }
+                        .help(L("取消搜索"))
+                }
+
+                steamAccountSection
+            }
+            .controlSize(.large)
+            .frame(minHeight: BrowseToolbarMetrics.height)
+
+            if !globalSettingsViewModel.hasValidCustomSteamAPIKey {
+                SteamAPIKeyReminderBanner()
+            }
+
+            if workshopViewModel.steamSetupState != .ready {
+                steamSetupBanner
+            }
+
+            if !workshopViewModel.isTotalExact, !workshopViewModel.items.isEmpty {
+                Text(L("已找到至少 %d 项匹配结果，翻页时继续筛选", workshopViewModel.totalItems))
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            if let error = workshopViewModel.error, !workshopViewModel.items.isEmpty {
+                HStack {
+                    Label { NetworkErrorText(error) } icon: { Image(systemName: "exclamationmark.triangle") }.font(.caption).foregroundStyle(.red)
+                    Spacer()
+                    Button(L("重试")) { workshopViewModel.retrySearch() }
+                }
+            }
+
+            if let message = workshopViewModel.pageNavigationMessage {
+                HStack(spacing: 8) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .foregroundStyle(.orange)
+                    NetworkErrorText(message)
+                        .font(.caption)
+                    Spacer()
+                    Button {
+                        workshopViewModel.pageNavigationMessage = nil
+                    } label: {
+                        Image(systemName: "xmark")
+                    }
+                    .buttonStyle(.plain)
+                    .help("关闭")
+                }
+                .padding(.horizontal, 10)
+                .padding(.vertical, 7)
+                .background(Color.orange.opacity(0.1))
+            }
+
+            if workshopViewModel.isLoading && workshopViewModel.items.isEmpty {
+                ZStack(alignment: .bottom) {
+                    VStack(spacing: 16) {
+                        ProgressView()
+                            .scaleEffect(1.5)
+                        Text("正在搜索创意工坊...")
+                            .foregroundStyle(.secondary)
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+
+                    if workshopViewModel.totalPages > 1 {
+                        PageNavigator(
+                            currentPage: workshopViewModel.currentPage,
+                            pageCount: workshopViewModel.totalPages,
+                            onSelect: workshopViewModel.goToPage
+                        )
+                        .padding(.bottom, 12)
+                    }
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if workshopViewModel.items.isEmpty && !workshopViewModel.isLoading {
+                ZStack(alignment: .bottom) {
+                    VStack(spacing: 12) {
+                        Image(systemName: "magnifyingglass")
+                            .font(.system(size: 40))
+                            .foregroundStyle(.tertiary)
+                        if let error = workshopViewModel.error {
+                            Text("加载失败")
+                                .font(.title3)
+                                .foregroundStyle(.secondary)
+                            NetworkErrorText(error)
+                                .multilineTextAlignment(.center)
+                                .font(.caption)
+                                .foregroundStyle(.red)
+                            Button("重试") { workshopViewModel.retrySearch() }
+                                .buttonStyle(.borderedProminent)
+                        } else {
+                            Text("没有找到壁纸")
+                                .font(.title3)
+                                .foregroundStyle(.secondary)
+                            Text("试试调整搜索条件或筛选标签")
+                                .font(.caption)
+                                .foregroundStyle(.tertiary)
+                        }
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+
+                    if workshopViewModel.totalPages > 1 {
+                        PageNavigator(
+                            currentPage: workshopViewModel.currentPage,
+                            pageCount: workshopViewModel.totalPages,
+                            onSelect: workshopViewModel.goToPage
+                        )
+                        .padding(.bottom, 12)
+                    }
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                ZStack(alignment: .bottom) {
+                    ScrollView {
+                        WallpaperGrid(minimumCardWidth: viewModel.explorerIconSize) {
+                            ForEach(workshopViewModel.items) { item in
+                                WorkshopItemCard(
+                                    item: item,
+
+                                    isSelected: workshopViewModel.selectedItem?.id == item.id,
+                                    isDownloaded: workshopViewModel.isInstalled(item.publishedFileId),
+                                    presetNeedsDependency: workshopViewModel.presetNeedsDependency(item.publishedFileId),
+                                    downloadTask: workshopViewModel.downloadTask(for: item.publishedFileId),
+                                    isFavorite: workshopViewModel.isWorkshopFavorite(item.publishedFileId),
+                                    isActive: isActive,
+                                    animatedPreviewMode: globalSettingsViewModel.animatedPreviewPlaybackMode
+                                )
+                                .onTapGesture {
+                                    workshopViewModel.selectWorkshopItem(item)
+                                }
+                                .contextMenu {
+                                    if let wallpaper = workshopViewModel.cachedInstalledWallpapers[item.publishedFileId] {
+                                        ExplorerItemMenu(
+                                            contentViewModel: viewModel,
+                                            wallpaperViewModel: wallpaperViewModel,
+                                            workshopViewModel: workshopViewModel,
+                                            current: wallpaper
+                                        )
+                                        ExplorerGlobalMenu(
+                                            contentViewModel: viewModel,
+                                            wallpaperViewModel: wallpaperViewModel
+                                        )
+                                    } else {
+                                        WorkshopCardContextMenu(
+                                            item: item,
+                                            workshopViewModel: workshopViewModel
+                                        )
+                                        WallpaperGridViewMenu(viewModel: viewModel)
+                                    }
+                                }
+                            }
+                        }
+                        #if arch(arm64)
+                        .padding(.trailing)
+                        #endif
+
+                        if workshopViewModel.isLoading {
+                            ProgressView()
+                                .padding()
+                        }
+
+                        if workshopViewModel.totalPages > 1 {
+                            Color.clear.frame(height: 58)
+                        }
+                    }
+                    // Reset only after a page is committed, not while its request is loading.
+                    .id(workshopViewModel.loadedPage)
+                    .contextMenu {
+                        WallpaperGridViewMenu(viewModel: viewModel)
+                    }
+
+                    if workshopViewModel.totalPages > 1 {
+                        PageNavigator(
+                            currentPage: workshopViewModel.currentPage,
+                            pageCount: workshopViewModel.totalPages,
+                            onSelect: workshopViewModel.goToPage
+                        )
+                        .padding(.bottom, 12)
+                    }
+                }
+            }
+        }
+        .task(id: isActive) {
+            guard isActive else { return }
+            #if DEBUG
+            guard startsServices else { return }
+            #endif
+            workshopViewModel.checkSteamSetup()
+            if workshopViewModel.items.isEmpty && !workshopViewModel.isLoading {
+                workshopViewModel.search()
+            }
+        }
+        .alert("Steam 登录", isPresented: Binding(
+            get: { workshopViewModel.logoutResultMessage != nil },
+            set: { if !$0 { workshopViewModel.logoutResultMessage = nil } }
+        )) {
+            Button("确定", role: .cancel) { workshopViewModel.logoutResultMessage = nil }
+        } message: {
+            Text(workshopViewModel.logoutResultMessage ?? "")
+        }
+    }
+
+    // MARK: - Steam Account Section (#2)
+
+    @ViewBuilder
+    var steamAccountSection: some View {
+        switch workshopViewModel.steamSetupState {
+        case .ready:
+            HStack(spacing: 8) {
+                HStack(spacing: 4) {
+                    Image(systemName: "person.crop.circle.fill")
+                        .foregroundStyle(.green)
+                        .font(.caption)
+                    Text(SteamServiceManager.shared.accountName)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
+                if workshopViewModel.isLoggingOut {
+                    HStack(spacing: 5) {
+                        ProgressView()
+                            .controlSize(.small)
+                        Text("正在退出…")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                } else {
+                    Button {
+                        workshopViewModel.logout()
+                    } label: {
+                        Image(systemName: "rectangle.portrait.and.arrow.right")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    .buttonStyle(.plain)
+                    .help("退出 Steam")
+                }
+            }
+        case .checking:
+            HStack(spacing: 6) {
+                ProgressView()
+                    .controlSize(.small)
+                Text(workshopViewModel.steamCheckingMessage)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        case .needsLogin, .serviceUnavailable:
+            Button {
+                AppDelegate.shared.openSteamSetup()
+            } label: {
+                Label("设置 Steam", systemImage: "gear")
+            }
+            .buttonStyle(.borderedProminent)
+        }
+    }
+
+    @ViewBuilder
+    var steamSetupBanner: some View {
+        switch workshopViewModel.steamSetupState {
+        case .checking:
+            HStack(spacing: 12) {
+                ProgressView()
+                    .controlSize(.regular)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(workshopViewModel.steamCheckingMessage)
+                        .font(.callout)
+                        .bold()
+                    Text("正在确认 Steam 登录状态，请稍候。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+            }
+            .padding(12)
+            .background(Color.secondary.opacity(0.08))
+            .clipShape(RoundedRectangle(cornerRadius: 8))
+        case .needsLogin, .serviceUnavailable:
+            HStack(spacing: 12) {
+                Image(systemName: "cloud.fill")
+                    .font(.title2)
+                    .foregroundStyle(.blue)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(workshopViewModel.steamSetupState == .serviceUnavailable ? "Steam 服务不可用" : "连接 Steam 以下载壁纸")
+                        .font(.callout)
+                        .bold()
+                    Text(workshopViewModel.steamSetupState == .serviceUnavailable
+                         ? "检查内置 Steam 服务后重试。"
+                         : "登录 Steam 后可直接从创意工坊下载壁纸到本地（需拥有 Wallpaper Engine）")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                Button {
+                    AppDelegate.shared.openSteamSetup()
+                } label: {
+                    Text(workshopViewModel.steamSetupState == .serviceUnavailable ? "检查服务" : "立即设置")
+                }
+                .buttonStyle(.borderedProminent)
+            }
+            .padding(12)
+            .background(Color.blue.opacity(0.08))
+            .clipShape(RoundedRectangle(cornerRadius: 8))
+            .overlay(
+                RoundedRectangle(cornerRadius: 8)
+                    .stroke(Color.blue.opacity(0.2), lineWidth: 1)
+            )
+        case .ready:
+            EmptyView()
+        }
+    }
+
+}
+
+struct SteamAPIKeyReminderBanner: View {
+    static let symbolName = "key.fill"
+    var hasBuiltInKey: Bool = SteamWebAPI.hasBuiltInKey
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Image(systemName: Self.symbolName)
+                .font(.title2)
+                .foregroundStyle(.orange)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(L(guidance.bannerTitle))
+                    .font(.callout)
+                    .bold()
+                Text(L(guidance.bannerMessage))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Spacer()
+            Button("立即设置") {
+                AppDelegate.shared.openSteamAPIKeySettings()
+            }
+            .buttonStyle(.borderedProminent)
+            .tint(.orange)
+        }
+        .padding(12)
+        .background(Color.orange.opacity(0.1))
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.orange.opacity(0.3), lineWidth: 1))
+    }
+
+    private var guidance: SteamAPIKeyGuidance { SteamAPIKeyGuidance(hasBuiltInKey: hasBuiltInKey) }
+}
+
+/// Shared wording for the actual bundled-key state; never includes key material.
+struct SteamAPIKeyGuidance {
+    let hasBuiltInKey: Bool
+    var bannerTitle: String {
+        hasBuiltInKey ? "建议设置专属 Steam Web API Key" : "浏览创意工坊需要 Steam Web API Key"
+    }
+    var bannerMessage: String {
+        hasBuiltInKey
+            ? "内置 Key 由所有用户共享，可能因请求过多影响浏览；专属 Key 不影响 Steam 登录和下载。"
+            : "请在设置中填写自己的 Key；扫码登录与浏览授权相互独立，登录状态不会因此失效。"
+    }
+    func settingsMessage(isCustomEmpty: Bool) -> String {
+        if hasBuiltInKey {
+            return isCustomEmpty
+                ? "内置 Key 由所有用户共享，可能因请求过多而暂时不可用。设置专属 Key 可显著提高创意工坊浏览稳定性。它只用于浏览，不影响 Steam 登录和壁纸下载。"
+                : "Steam Web API Key 应为 32 位十六进制字符。当前将继续使用内置 Key。"
+        }
+        return isCustomEmpty
+            ? "此构建未内置 Steam Web API Key，设置有效 Key 后才能浏览工坊列表。Steam 登录与下载授权由 Steam 另行验证。"
+            : "Steam Web API Key 应为 32 位十六进制字符。此构建没有可回退的内置 Key，请修正后重试。"
+    }
+}
